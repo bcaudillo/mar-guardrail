@@ -41,11 +41,12 @@ DATABASE_URL = os.getenv(
     "postgresql://user:password@host.neon.tech/dbname?sslmode=require",
 )
 
-# The schema (BigQuery: dataset) the Platform Connector writes its tables into,
-# e.g. "fivetran_platform". Setting this means the MAR query finds
-# incremental_mar regardless of the connection's search_path. Leave it blank to
-# use the connection's default schema.
-PLATFORM_SCHEMA = os.getenv("FIVETRAN_PLATFORM_SCHEMA", "fivetran_platform")
+# The schema (BigQuery: dataset) the Platform Connector writes its tables into.
+# Setting this means the MAR query finds incremental_mar regardless of the
+# connection's search_path. Leave it blank to use the connection's default
+# schema. Note: Fivetran's schema name varies by deployment — newer Platform
+# Connector setups land in "fivetran_platform", others in "fivetran_metadata".
+PLATFORM_SCHEMA = os.getenv("FIVETRAN_PLATFORM_SCHEMA", "fivetran_metadata")
 
 
 # ---------------------------------------------------------------------------
