@@ -11,9 +11,9 @@
 # config.py. config.py stays the single source of truth for the real run.
 #
 # WHERE TO POINT IT AT YOUR DATA: by default it shows sample connectors so it
-# runs with zero setup. Use the "Use live data" toggle in the sidebar to switch
-# to real MAR from your destination at runtime — no code edit needed. The
-# USE_LIVE_DATA constant below just sets which way that toggle starts.
+# runs with zero setup. Use the "Data source" control at the top of the page to
+# switch to real MAR from your destination at runtime — no code edit needed. The
+# USE_LIVE_DATA constant below just sets which way that control starts.
 
 from datetime import datetime, timedelta
 
@@ -22,10 +22,10 @@ import streamlit as st
 
 import config
 
-# The DEFAULT position of the sidebar "Use live data" toggle. True starts the
-# app on real numbers from query.get_current_mar() (needs a working
+# The DEFAULT for the "Data source" control at the top of the page. True starts
+# the app on real numbers from query.get_current_mar() (needs a working
 # DATABASE_URL); False starts it on the sample data below. Either way the user
-# can flip it live in the sidebar.
+# can switch it live in the UI.
 USE_LIVE_DATA = False
 
 # Sample data so the demo runs immediately. Keys are "connector types" and each
@@ -366,27 +366,37 @@ def render_activity():
 # ===========================================================================
 # PAGE
 # ===========================================================================
-st.set_page_config(page_title="MAR Guardrail", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="MAR Guardrail", layout="wide", page_icon="🛡️",
+                   initial_sidebar_state="collapsed")
 inject_css()
 
-# Data source toggle — switch between built-in sample data and live MAR from
-# your destination without editing code. Starts on USE_LIVE_DATA's value.
-with st.sidebar:
-    st.markdown("### Data source")
-    use_live = st.toggle(
-        "Use live data",
-        value=USE_LIVE_DATA,
-        help="Off: built-in sample connectors. On: real MAR from DATABASE_URL "
-        "via query.get_current_mar() (needs a working .env).",
-    )
-    st.caption("Live mode reads from your destination using DATABASE_URL and "
-               "FIVETRAN_PLATFORM_SCHEMA. Sample mode needs no setup.")
+# Reserve the header at the very top, then render the data-source control right
+# beneath it. The control lives in the MAIN page (not the sidebar, which
+# auto-collapses and hid it) so it's always visible while using the app.
+header_slot = st.container()
 
-header_bar(use_live)
+with st.container(border=True):
+    pick_col, ctl_col = st.columns([3, 2])
+    with pick_col:
+        st.markdown("**Data source**")
+        st.caption("Sample data needs no setup. Live data reads real MAR from "
+                   "your destination via DATABASE_URL + FIVETRAN_PLATFORM_SCHEMA.")
+    with ctl_col:
+        choice = st.radio(
+            "Data source",
+            options=["Sample data", "Live data"],
+            index=1 if USE_LIVE_DATA else 0,
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+use_live = choice == "Live data"
+
+with header_slot:
+    header_bar(use_live)
 
 # In live mode a missing/misconfigured database would otherwise crash the whole
 # page; catch it, show a clear message, and fall back to an empty dashboard so
-# the user can simply flip the toggle back.
+# the user can simply switch back to sample data.
 load_error = None
 try:
     mar_data = load_mar(use_live)
@@ -397,7 +407,7 @@ if load_error is not None:
     st.error(
         f"Couldn't load live MAR from the database: {load_error}\n\n"
         "Check DATABASE_URL and FIVETRAN_PLATFORM_SCHEMA in your .env, then "
-        "reload — or turn off **Use live data** in the sidebar to use sample data."
+        "reload — or switch **Data source** back to *Sample data* above."
     )
 
 df = connector_frame(mar_data)
