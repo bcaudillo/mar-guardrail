@@ -294,7 +294,9 @@ def render_connector_selector(card_key, mar_data):
     selected = []
     with st.container(height=SCROLL_HEIGHT_PX):
         for connector_type, instances in mar_data.items():
-            with st.expander(f"{connector_type}  ({len(instances)})", expanded=len(instances) > 1):
+            # Expanded by default so connectors are visible immediately rather
+            # than hidden behind a collapsed section.
+            with st.expander(f"{connector_type}  ({len(instances)})", expanded=True):
                 for connection_name in instances:
                     if st.checkbox(connection_name, key=f"{card_key}_sel_{connection_name}"):
                         selected.append(connection_name)
@@ -320,20 +322,26 @@ def render_limit_inputs(card_key, selected, mar_data):
 
 
 def render_trigger_card(card_key, title, description, mar_data):
-    """One trigger card: enable toggle -> connector select -> limit inputs.
+    """One trigger card: connector select -> limit inputs.
 
-    All four channels share this layout so the pattern is obvious to copy."""
+    The connector list shows immediately; the trigger is active for whichever
+    connectors you select. All four channels share this layout so the pattern is
+    obvious to copy."""
     with st.container(border=True):
         st.markdown(f"**{title}**")
         st.caption(description)
-        enabled = st.toggle("Enable this trigger", key=f"{card_key}_toggle")
-        if not enabled:
+        if not mar_data:
+            st.caption("No connectors to configure yet — load data using the "
+                       "**Data source** control above.")
             return
         selected = render_connector_selector(card_key, mar_data)
         if selected:
+            st.caption(f"✓ Active for {len(selected)} connector(s). Set each "
+                       "limit below.")
             render_limit_inputs(card_key, selected, mar_data)
         else:
-            st.info("Select one or more connectors to set their MAR limits.")
+            st.caption("Select one or more connectors above to activate this "
+                       "trigger and set their MAR limits.")
 
 
 def render_activity():
