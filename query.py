@@ -24,9 +24,12 @@ def get_current_mar():
     """
     # First day of the current month, and first day of the NEXT month. MAR is
     # billed per calendar month, so we scope to "this month" by bounding both
-    # ends — measured_month >= this month AND < next month — rather than a
+    # ends — measured_date >= this month AND < next month — rather than a
     # rolling 30-day window or an open-ended >= that would also fold in any
-    # future-dated rows.
+    # future-dated rows. incremental_mar stamps each row with a daily
+    # measured_date (there is no measured_month column — that only appears as a
+    # date_trunc() expression in Fivetran's sample queries), so a half-open
+    # [month_start, next_month_start) range captures exactly this month's days.
     month_start = date.today().replace(day=1)
     if month_start.month == 12:
         next_month_start = month_start.replace(year=month_start.year + 1, month=1)
@@ -42,8 +45,8 @@ def get_current_mar():
         SELECT connection_name, SUM(incremental_rows) AS total_mar
         FROM incremental_mar
         WHERE free_type = 'PAID'
-          AND measured_month >= %s
-          AND measured_month < %s
+          AND measured_date >= %s
+          AND measured_date < %s
         GROUP BY connection_name
     """
 
