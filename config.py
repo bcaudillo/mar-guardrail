@@ -48,6 +48,18 @@ DATABASE_URL = os.getenv(
 # Connector setups land in "fivetran_platform", others in "fivetran_metadata".
 PLATFORM_SCHEMA = os.getenv("FIVETRAN_PLATFORM_SCHEMA", "fivetran_metadata")
 
+# Which MAR rows to count. Fivetran tags every incremental_mar row with a
+# free_type: "PAID" (billable — what a real guardrail watches), "SYSTEM"
+# (Fivetran's internal MAR), or "FREE". Keep this ["PAID"] for production. A
+# FREE Fivetran account has no PAID rows, so set MAR_FREE_TYPES=SYSTEM (env, or
+# edit the default here) to see live numbers while testing. Comma-separated in
+# the env var, e.g. MAR_FREE_TYPES=PAID,SYSTEM.
+MAR_FREE_TYPES = [
+    t.strip().upper()
+    for t in os.getenv("MAR_FREE_TYPES", "PAID").split(",")
+    if t.strip()
+] or ["PAID"]
+
 
 # ---------------------------------------------------------------------------
 # FIVETRAN API

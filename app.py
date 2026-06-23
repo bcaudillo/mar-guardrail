@@ -61,19 +61,20 @@ COLOR_MUTED = "#64748b"
 # ===========================================================================
 # DATA
 # ===========================================================================
-def load_mar(use_live):
-    """Return {connector_type: {connection_name: paid_mar}}.
+def load_mar(use_live, free_types=None):
+    """Return {connector_type: {connection_name: mar}}.
 
     With use_live off, returns the sample data. With it on, folds the flat
     {connection_name: mar} from the framework's real query into the same
-    type-grouped shape the UI expects."""
+    type-grouped shape the UI expects. free_types selects which Fivetran MAR
+    types to count (defaults to config.MAR_FREE_TYPES)."""
     if not use_live:
         return DEMO_MAR
 
     from query import get_current_mar  # imported lazily so the demo runs without a DB
 
     grouped = {}
-    for connection_name, mar in get_current_mar().items():
+    for connection_name, mar in get_current_mar(free_types).items():
         # Infer the connector type from the name prefix (everything before the
         # first underscore). Adjust if your naming convention differs.
         connector_type = connection_name.split("_")[0]
@@ -389,7 +390,24 @@ with st.container(border=True):
             horizontal=True,
             label_visibility="collapsed",
         )
-use_live = choice == "Live data"
+    use_live = choice == "Live data"
+
+    # In live mode, let the user choose which Fivetran MAR types to count.
+    # Production watches PAID; a free account has only SYSTEM rows, so exposing
+    # this here means the dashboard can actually show live numbers instead of
+    # coming back empty. Defaults to whatever config.MAR_FREE_TYPES is set to.
+    free_types = None
+    if use_live:
+        options = ["PAID", "SYSTEM", "FREE"]
+        default_types = [t for t in config.MAR_FREE_TYPES if t in options] or ["PAID"]
+        free_types = st.multiselect(
+            "Count which MAR types",
+            options,
+            default=default_types,
+            help="Fivetran tags each row PAID (billable), SYSTEM (internal), or "
+                 "FREE. A free Fivetran account only has SYSTEM rows — pick "
+                 "SYSTEM to see live data.",
+        )
 
 with header_slot:
     header_bar(use_live)
@@ -398,16 +416,25 @@ with header_slot:
 # page; catch it, show a clear message, and fall back to an empty dashboard so
 # the user can simply switch back to sample data.
 load_error = None
-try:
-    mar_data = load_mar(use_live)
-except Exception as exc:  # noqa: BLE001 — surface any driver/connection error
-    mar_data, load_error = {}, exc
+mar_data = {}
+if use_live and not free_types:
+    st.info("Select at least one MAR type above to load live data.")
+else:
+    try:
+        mar_data = load_mar(use_live, free_types)
+    except Exception as exc:  # noqa: BLE001 — surface any driver/connection error
+        load_error = exc
 
 if load_error is not None:
     st.error(
         f"Couldn't load live MAR from the database: {load_error}\n\n"
         "Check DATABASE_URL and FIVETRAN_PLATFORM_SCHEMA in your .env, then "
         "reload — or switch **Data source** back to *Sample data* above."
+    )
+elif use_live and free_types and not mar_data:
+    st.info(
+        f"Connected fine, but no {' / '.join(free_types)} MAR rows exist for "
+        "this month. On a free Fivetran account try selecting **SYSTEM** above."
     )
 
 df = connector_frame(mar_data)

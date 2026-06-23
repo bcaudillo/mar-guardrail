@@ -12,9 +12,9 @@
 import re
 from datetime import date
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 
-from config import DATABASE_URL, PLATFORM_SCHEMA
+from config import DATABASE_URL, MAR_FREE_TYPES, PLATFORM_SCHEMA
 
 # One engine per process, created lazily so simply importing this module (e.g.
 # the Streamlit demo running on sample data) never opens a connection.
@@ -53,13 +53,22 @@ def _table_ref():
     return f"{PLATFORM_SCHEMA}.incremental_mar"
 
 
-def get_current_mar():
-    """Return {connection_name: total_paid_mar} for the current calendar month.
+def get_current_mar(free_types=None):
+    """Return {connection_name: total_mar} for the current calendar month.
 
-    Only PAID rows are counted (see the free_type note below), and only rows
-    whose measured_date falls in the current month. Connections with zero paid
-    MAR this month simply won't appear in the result.
+    Only rows whose free_type is in `free_types` are counted (defaults to
+    config.MAR_FREE_TYPES — normally ["PAID"]), and only rows whose
+    measured_date falls in the current month. Connections with zero matching MAR
+    this month simply won't appear in the result.
+
+    Pass free_types to override the configured default for one call (e.g. the
+    demo UI lets you view SYSTEM rows on a free account that has no PAID MAR).
     """
+    # None means "use the configured default"; an explicitly empty list is a
+    # caller error (an IN () clause is invalid SQL), so reject it loudly.
+    types = list(MAR_FREE_TYPES if free_types is None else free_types)
+    if not types:
+        raise ValueError("free_types is empty — specify at least one MAR free_type.")
     # First day of the current month, and first day of the NEXT month. MAR is
     # billed per calendar month, so we scope to "this month" by bounding both
     # ends — measured_date >= this month AND < next month — rather than a
@@ -74,28 +83,33 @@ def get_current_mar():
     else:
         next_month_start = month_start.replace(month=month_start.month + 1)
 
-    # WHY free_type = 'PAID':
-    #   Fivetran tags every MAR row as PAID or FREE. Free MAR (e.g. the first
-    #   sync of a new table, or rows from free connector types) does not count
-    #   against your bill, so guarding on it would produce false alarms. We
-    #   only care about the rows that actually cost money — the PAID ones.
+    # WHY filter on free_type:
+    #   Fivetran tags every MAR row PAID (billable), SYSTEM (its own internal
+    #   MAR), or FREE. A real guardrail counts only PAID, so it never false-alarms
+    #   on rows that don't cost money. Which types to count is configurable
+    #   (config.MAR_FREE_TYPES) so a free account — which has no PAID rows — can
+    #   still see live SYSTEM numbers while testing.
     #
-    # Named bind params (:start / :end) let SQLAlchemy render the placeholders
-    # in whatever style the target database expects, so this one statement works
-    # everywhere.
+    # `free_type IN :free_types` uses an expanding bind param: SQLAlchemy expands
+    # the list into the right number of placeholders for the target database, so
+    # the type list is bound safely (never string-formatted into the SQL). Named
+    # params (:start / :end) likewise render in whatever style the DB expects.
     sql = text(
         f"""
         SELECT connection_name, SUM(incremental_rows) AS total_mar
         FROM {_table_ref()}
-        WHERE free_type = 'PAID'
+        WHERE free_type IN :free_types
           AND measured_date >= :start
           AND measured_date < :end
         GROUP BY connection_name
         """
-    )
+    ).bindparams(bindparam("free_types", expanding=True))
 
     # The `with` block guarantees the connection is returned to the pool even if
     # the query raises, so we never leak one.
     with _get_engine().connect() as conn:
-        result = conn.execute(sql, {"start": month_start, "end": next_month_start})
+        result = conn.execute(
+            sql,
+            {"free_types": types, "start": month_start, "end": next_month_start},
+        )
         return {connection_name: int(total_mar) for connection_name, total_mar in result}
