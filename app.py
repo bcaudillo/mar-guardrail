@@ -11,8 +11,9 @@
 # config.py. config.py stays the single source of truth for the real run.
 #
 # WHERE TO POINT IT AT YOUR DATA: by default it shows sample connectors so it
-# runs with zero setup. Flip USE_LIVE_DATA to True (or wire load_mar() to your
-# own source) once your Platform Connector + config.py are ready.
+# runs with zero setup. Use the "Use live data" toggle in the sidebar to switch
+# to real MAR from your destination at runtime — no code edit needed. The
+# USE_LIVE_DATA constant below just sets which way that toggle starts.
 
 from datetime import datetime, timedelta
 
@@ -21,8 +22,10 @@ import streamlit as st
 
 import config
 
-# Set True to pull real numbers from query.get_current_mar() instead of the
-# sample data below. Requires a working DATABASE_URL in config.py.
+# The DEFAULT position of the sidebar "Use live data" toggle. True starts the
+# app on real numbers from query.get_current_mar() (needs a working
+# DATABASE_URL); False starts it on the sample data below. Either way the user
+# can flip it live in the sidebar.
 USE_LIVE_DATA = False
 
 # Sample data so the demo runs immediately. Keys are "connector types" and each
@@ -58,13 +61,13 @@ COLOR_MUTED = "#64748b"
 # ===========================================================================
 # DATA
 # ===========================================================================
-def load_mar():
+def load_mar(use_live):
     """Return {connector_type: {connection_name: paid_mar}}.
 
-    Uses sample data unless USE_LIVE_DATA is on, in which case it folds the
-    flat {connection_name: mar} from the framework's real query into the same
+    With use_live off, returns the sample data. With it on, folds the flat
+    {connection_name: mar} from the framework's real query into the same
     type-grouped shape the UI expects."""
-    if not USE_LIVE_DATA:
+    if not use_live:
         return DEMO_MAR
 
     from query import get_current_mar  # imported lazily so the demo runs without a DB
@@ -224,8 +227,8 @@ def inject_css():
     )
 
 
-def header_bar():
-    mode = "Live data" if USE_LIVE_DATA else "Sample data"
+def header_bar(use_live):
+    mode = "Live data" if use_live else "Sample data"
     st.markdown(
         f"""
         <div class="app-header">
@@ -365,9 +368,38 @@ def render_activity():
 # ===========================================================================
 st.set_page_config(page_title="MAR Guardrail", layout="wide", page_icon="🛡️")
 inject_css()
-header_bar()
 
-mar_data = load_mar()
+# Data source toggle — switch between built-in sample data and live MAR from
+# your destination without editing code. Starts on USE_LIVE_DATA's value.
+with st.sidebar:
+    st.markdown("### Data source")
+    use_live = st.toggle(
+        "Use live data",
+        value=USE_LIVE_DATA,
+        help="Off: built-in sample connectors. On: real MAR from DATABASE_URL "
+        "via query.get_current_mar() (needs a working .env).",
+    )
+    st.caption("Live mode reads from your destination using DATABASE_URL and "
+               "FIVETRAN_PLATFORM_SCHEMA. Sample mode needs no setup.")
+
+header_bar(use_live)
+
+# In live mode a missing/misconfigured database would otherwise crash the whole
+# page; catch it, show a clear message, and fall back to an empty dashboard so
+# the user can simply flip the toggle back.
+load_error = None
+try:
+    mar_data = load_mar(use_live)
+except Exception as exc:  # noqa: BLE001 — surface any driver/connection error
+    mar_data, load_error = {}, exc
+
+if load_error is not None:
+    st.error(
+        f"Couldn't load live MAR from the database: {load_error}\n\n"
+        "Check DATABASE_URL and FIVETRAN_PLATFORM_SCHEMA in your .env, then "
+        "reload — or turn off **Use live data** in the sidebar to use sample data."
+    )
+
 df = connector_frame(mar_data)
 
 render_overview(df)
