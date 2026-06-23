@@ -1,0 +1,9 @@
+# Minimal dependencies — only what the framework actually imports.
+# psycopg2-binary : PostgreSQL driver for query.py (no system build needed)
+# requests        : Fivetran REST API + Slack/custom webhook calls
+# streamlit       : the demo UI in app.py (not needed for main.py to run)
+# python-dotenv   : loads secrets from .env into config.py
+psycopg2-binary
+requests
+streamlit
+python-dotenv
