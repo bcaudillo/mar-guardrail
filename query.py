@@ -53,13 +53,18 @@ def _table_ref():
     return f"{PLATFORM_SCHEMA}.incremental_mar"
 
 
-def get_current_mar(free_types=None):
-    """Return {connection_name: total_mar} for the current calendar month.
+def get_current_mar(free_types=None, start=None, end=None):
+    """Return {connection_name: total_mar} for a measured_date window.
 
     Only rows whose free_type is in `free_types` are counted (defaults to
-    config.MAR_FREE_TYPES — normally ["PAID"]), and only rows whose
-    measured_date falls in the current month. Connections with zero matching MAR
-    this month simply won't appear in the result.
+    config.MAR_FREE_TYPES — normally ["PAID"]). Connections with zero matching
+    MAR in the window simply won't appear in the result.
+
+    Time window (half-open [start, end)):
+      - start and end both omitted -> the current calendar month (the normal
+        guardrail behavior: MAR is billed per month).
+      - pass explicit dates to widen or shift it. The demo UI uses this for an
+        "All time" view so historical data (e.g. last month's rows) still shows.
 
     Pass free_types to override the configured default for one call (e.g. the
     demo UI lets you view SYSTEM rows on a free account that has no PAID MAR).
@@ -77,11 +82,19 @@ def get_current_mar(free_types=None):
     # measured_date (there is no measured_month column — that only appears as a
     # date_trunc() expression in Fivetran's sample queries), so a half-open
     # [month_start, next_month_start) range captures exactly this month's days.
-    month_start = date.today().replace(day=1)
-    if month_start.month == 12:
-        next_month_start = month_start.replace(year=month_start.year + 1, month=1)
+    if start is None and end is None:
+        # Default: the current calendar month, bounded on both ends so we capture
+        # exactly this month's days and never fold in future-dated rows.
+        start = date.today().replace(day=1)
+        if start.month == 12:
+            end = start.replace(year=start.year + 1, month=1)
+        else:
+            end = start.replace(month=start.month + 1)
     else:
-        next_month_start = month_start.replace(month=month_start.month + 1)
+        # Caller widened/shifted the window; fill in an open side with a bound
+        # wide enough to mean "no limit" in practice.
+        start = start or date(1970, 1, 1)
+        end = end or date(2999, 1, 1)
 
     # WHY filter on free_type:
     #   Fivetran tags every MAR row PAID (billable), SYSTEM (its own internal
@@ -110,6 +123,6 @@ def get_current_mar(free_types=None):
     with _get_engine().connect() as conn:
         result = conn.execute(
             sql,
-            {"free_types": types, "start": month_start, "end": next_month_start},
+            {"free_types": types, "start": start, "end": end},
         )
         return {connection_name: int(total_mar) for connection_name, total_mar in result}

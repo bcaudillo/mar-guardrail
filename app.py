@@ -15,7 +15,7 @@
 # switch to real MAR from your destination at runtime — no code edit needed. The
 # USE_LIVE_DATA constant below just sets which way that control starts.
 
-from datetime import datetime, timedelta
+from datetime import date
 
 import pandas as pd
 import streamlit as st
@@ -61,20 +61,21 @@ COLOR_MUTED = "#64748b"
 # ===========================================================================
 # DATA
 # ===========================================================================
-def load_mar(use_live, free_types=None):
+def load_mar(use_live, free_types=None, start=None, end=None):
     """Return {connector_type: {connection_name: mar}}.
 
     With use_live off, returns the sample data. With it on, folds the flat
     {connection_name: mar} from the framework's real query into the same
     type-grouped shape the UI expects. free_types selects which Fivetran MAR
-    types to count (defaults to config.MAR_FREE_TYPES)."""
+    types to count (defaults to config.MAR_FREE_TYPES); start/end set the
+    measured_date window (None/None = current month)."""
     if not use_live:
         return DEMO_MAR
 
     from query import get_current_mar  # imported lazily so the demo runs without a DB
 
     grouped = {}
-    for connection_name, mar in get_current_mar(free_types).items():
+    for connection_name, mar in get_current_mar(free_types, start, end).items():
         # Infer the connector type from the name prefix (everything before the
         # first underscore). Adjust if your naming convention differs.
         connector_type = connection_name.split("_")[0]
@@ -131,18 +132,6 @@ def connector_frame(mar_data):
     if not df.empty:
         df = df.sort_values("ratio", ascending=False).reset_index(drop=True)
     return df
-
-
-def seed_activity_log():
-    """Sample activity so the log isn't empty on first load. In a real UI you'd
-    populate this from a table the framework writes to."""
-    now = datetime.now()
-    return [
-        {"time": now - timedelta(minutes=4), "connection": "salesforce_prod", "status": "PAUSED"},
-        {"time": now - timedelta(minutes=4), "connection": "netsuite_finance", "status": "ALERT"},
-        {"time": now - timedelta(hours=2), "connection": "postgres_billing", "status": "ALERT"},
-        {"time": now - timedelta(hours=5), "connection": "hubspot_marketing", "status": "OK"},
-    ]
 
 
 # ===========================================================================
@@ -348,11 +337,16 @@ def render_trigger_card(card_key, title, description, mar_data):
 
 
 def render_activity():
-    section("Activity log", "most recent guardrail actions")
-    if "activity" not in st.session_state:
-        st.session_state.activity = seed_activity_log()
+    section("Activity log", "guardrail actions taken this session")
+    # Starts empty — real entries would be appended as the framework pauses or
+    # alerts on connectors. No fabricated sample rows.
+    activity = st.session_state.get("activity", [])
+    if not activity:
+        st.caption("No guardrail actions yet. Entries appear here when a "
+                   "connector crosses its limit and a trigger fires.")
+        return
     rows = []
-    for e in st.session_state.activity:
+    for e in activity:
         color = BADGE_COLORS.get(e["status"], COLOR_MUTED)
         rows.append(
             f"<div class='act-row'>"
@@ -389,6 +383,7 @@ with st.container(border=True):
             index=1 if USE_LIVE_DATA else 0,
             horizontal=True,
             label_visibility="collapsed",
+            key="ds_source",
         )
     use_live = choice == "Live data"
 
@@ -397,17 +392,38 @@ with st.container(border=True):
     # this here means the dashboard can actually show live numbers instead of
     # coming back empty. Defaults to whatever config.MAR_FREE_TYPES is set to.
     free_types = None
+    time_window = "This month"
     if use_live:
-        options = ["PAID", "SYSTEM", "FREE"]
-        default_types = [t for t in config.MAR_FREE_TYPES if t in options] or ["PAID"]
-        free_types = st.multiselect(
-            "Count which MAR types",
-            options,
-            default=default_types,
-            help="Fivetran tags each row PAID (billable), SYSTEM (internal), or "
-                 "FREE. A free Fivetran account only has SYSTEM rows — pick "
-                 "SYSTEM to see live data.",
-        )
+        fcol, tcol = st.columns(2)
+        with fcol:
+            options = ["PAID", "SYSTEM", "FREE"]
+            default_types = [t for t in config.MAR_FREE_TYPES if t in options] or ["PAID"]
+            free_types = st.multiselect(
+                "Count which MAR types",
+                options,
+                default=default_types,
+                help="Fivetran tags each row PAID (billable), SYSTEM (internal), "
+                     "or FREE. A free Fivetran account only has SYSTEM rows — "
+                     "pick SYSTEM to see live data.",
+                key="ds_types",
+            )
+        with tcol:
+            time_window = st.radio(
+                "Time window",
+                options=["This month", "All time"],
+                horizontal=True,
+                help="MAR is billed per calendar month, so the guardrail uses "
+                     "'This month'. If your data is from an earlier month, pick "
+                     "'All time' to see it.",
+                key="ds_window",
+            )
+
+# Translate the window choice into a measured_date range for the query. "All
+# time" passes wide bounds; "This month" passes None so the query defaults to
+# the current calendar month (the real guardrail behavior).
+win_start, win_end = (None, None)
+if time_window == "All time":
+    win_start, win_end = date(1970, 1, 1), date(2999, 1, 1)
 
 with header_slot:
     header_bar(use_live)
@@ -421,7 +437,7 @@ if use_live and not free_types:
     st.info("Select at least one MAR type above to load live data.")
 else:
     try:
-        mar_data = load_mar(use_live, free_types)
+        mar_data = load_mar(use_live, free_types, win_start, win_end)
     except Exception as exc:  # noqa: BLE001 — surface any driver/connection error
         load_error = exc
 
@@ -432,9 +448,12 @@ if load_error is not None:
         "reload — or switch **Data source** back to *Sample data* above."
     )
 elif use_live and free_types and not mar_data:
+    extra = (" Try the **All time** window above — your data may be from an "
+             "earlier month." if time_window == "This month" else "")
     st.info(
-        f"Connected fine, but no {' / '.join(free_types)} MAR rows exist for "
-        "this month. On a free Fivetran account try selecting **SYSTEM** above."
+        f"Connected fine, but no {' / '.join(free_types)} MAR rows match "
+        f"({time_window.lower()}).{extra} On a free Fivetran account, MAR is "
+        "tagged **SYSTEM** — make sure that's selected above."
     )
 
 df = connector_frame(mar_data)
@@ -442,7 +461,7 @@ df = connector_frame(mar_data)
 render_overview(df)
 
 # MAR-by-connector chart for an at-a-glance comparison.
-section("MAR by connector", "current paid MAR per connection")
+section("MAR by connector", "MAR per connection for the selected window")
 if not df.empty:
     chart_df = df.set_index("connection")["mar"]
     st.bar_chart(chart_df, height=260, color=COLOR_INK)
