@@ -1,15 +1,14 @@
 # app.py
 #
-# This is a demo interface built on top of the mar-guardrail framework. It is
-# not required to run the framework. Use it to demonstrate capabilities or as a
-# starting point for your own UI.
+# Demo console for the mar-guardrail framework. It is NOT required to run the
+# framework (main.py is) — it's a polished dashboard for demonstrating the
+# guardrail and trying out trigger setups.
 #
 # Run with:  streamlit run app.py
 #
 # It reads CREDENTIALS from config.py, but every connector pick and MAR limit
 # you set here is independent UI state — this app NEVER writes back to
-# config.py. config.py stays the single source of truth for the real run
-# (main.py). Think of this as a sandbox for trying out guardrail setups.
+# config.py. config.py stays the single source of truth for the real run.
 #
 # WHERE TO POINT IT AT YOUR DATA: by default it shows sample connectors so it
 # runs with zero setup. Flip USE_LIVE_DATA to True (or wire load_mar() to your
@@ -17,6 +16,7 @@
 
 from datetime import datetime, timedelta
 
+import pandas as pd
 import streamlit as st
 
 import config
@@ -43,13 +43,23 @@ DEFAULT_LIMIT = 1_000_000
 # "Near limit" means at or above this share of the configured limit.
 NEAR_LIMIT_RATIO = 0.8
 
-# Roughly ten rows tall, then the container scrolls. Tuned to the spec's
-# "max 10 rows visible before scrolling, vertical scroll only".
+# Roughly ten rows tall, then the container scrolls.
 SCROLL_HEIGHT_PX = 360
 
+# --- design tokens ---------------------------------------------------------
+# One palette, referenced everywhere, so the whole UI stays consistent.
+COLOR_OK = "#16a34a"
+COLOR_NEAR = "#d97706"
+COLOR_OVER = "#dc2626"
+COLOR_INK = "#0f172a"
+COLOR_MUTED = "#64748b"
 
+
+# ===========================================================================
+# DATA
+# ===========================================================================
 def load_mar():
-    """Return {connector_type: {connection_name: paid_mar}} for the demo.
+    """Return {connector_type: {connection_name: paid_mar}}.
 
     Uses sample data unless USE_LIVE_DATA is on, in which case it folds the
     flat {connection_name: mar} from the framework's real query into the same
@@ -77,6 +87,48 @@ def configured_limit(connection_name):
     return DEFAULT_LIMIT
 
 
+def status_for(mar, limit):
+    """Classify a connector against its limit: OVER / NEAR / OK."""
+    ratio = mar / limit if limit else 0
+    if ratio >= 1.0:
+        return "OVER"
+    if ratio >= NEAR_LIMIT_RATIO:
+        return "NEAR"
+    return "OK"
+
+
+STATUS_COLOR = {"OVER": COLOR_OVER, "NEAR": COLOR_NEAR, "OK": COLOR_OK}
+# Activity-log statuses reuse the same palette so colors mean the same thing
+# everywhere: a hard stop is red, a notification amber, all-clear green.
+BADGE_COLORS = {"PAUSED": COLOR_OVER, "ALERT": COLOR_NEAR, "OK": COLOR_OK}
+
+
+def connector_frame(mar_data):
+    """Flatten the grouped data into a sorted DataFrame the UI renders from.
+
+    One row per connection, most-at-risk first (highest MAR/limit ratio), so
+    the connectors that need attention are always at the top."""
+    rows = []
+    for connector_type, instances in mar_data.items():
+        for connection_name, mar in instances.items():
+            limit = configured_limit(connection_name)
+            ratio = mar / limit if limit else 0
+            rows.append(
+                {
+                    "type": connector_type,
+                    "connection": connection_name,
+                    "mar": mar,
+                    "limit": limit,
+                    "ratio": ratio,
+                    "status": status_for(mar, limit),
+                }
+            )
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("ratio", ascending=False).reset_index(drop=True)
+    return df
+
+
 def seed_activity_log():
     """Sample activity so the log isn't empty on first load. In a real UI you'd
     populate this from a table the framework writes to."""
@@ -89,31 +141,166 @@ def seed_activity_log():
     ]
 
 
-# --- status badge styling -------------------------------------------------
-# PAUSED = we stopped the connector, ALERT = we notified, OK = under limit.
-BADGE_COLORS = {"PAUSED": "#d64545", "ALERT": "#e0a300", "OK": "#2e9e5b"}
+# ===========================================================================
+# STYLING
+# ===========================================================================
+def inject_css():
+    """All custom styling in one place. Keeps the Python below readable and the
+    look consistent — change a token here, it changes everywhere."""
+    st.markdown(
+        f"""
+        <style>
+          /* Tighten Streamlit's default chrome for a dashboard feel. */
+          #MainMenu, footer {{visibility: hidden;}}
+          [data-testid="stToolbar"], .stDeployButton,
+          [data-testid="stDecoration"] {{display: none !important;}}
+          [data-testid="stHeader"] {{background: transparent;}}
+          .block-container {{padding-top: 1.6rem; padding-bottom: 3rem; max-width: 1180px;}}
+          html, body, [class*="css"] {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: {COLOR_INK};
+          }}
 
+          /* --- header bar --- */
+          .app-header {{
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 22px 28px; border-radius: 16px; margin-bottom: 22px;
+            background: linear-gradient(120deg, #4f46e5 0%, #7c3aed 100%);
+            color: #fff; box-shadow: 0 10px 30px rgba(79,70,229,.25);
+          }}
+          .app-header h1 {{font-size: 1.5rem; font-weight: 700; margin: 0; color: #fff;}}
+          .app-header .sub {{font-size: .9rem; opacity: .85; margin-top: 4px;}}
+          .mode-pill {{
+            font-size: .72rem; font-weight: 700; letter-spacing: .04em;
+            padding: 6px 12px; border-radius: 999px; text-transform: uppercase;
+            background: rgba(255,255,255,.18); border: 1px solid rgba(255,255,255,.35);
+          }}
 
-def badge(status):
-    color = BADGE_COLORS.get(status, "#888")
-    return (
-        f"<span style='background:{color};color:white;padding:2px 8px;"
-        f"border-radius:10px;font-size:0.75rem;font-weight:600'>{status}</span>"
+          /* --- KPI tiles --- */
+          .kpi {{
+            background: #fff; border: 1px solid #e7ebf0; border-radius: 14px;
+            padding: 18px 20px; box-shadow: 0 1px 2px rgba(16,24,40,.04);
+            border-left: 4px solid var(--accent, #4f46e5); height: 100%;
+          }}
+          .kpi .label {{font-size: .78rem; color: {COLOR_MUTED}; font-weight: 600;
+            text-transform: uppercase; letter-spacing: .04em;}}
+          .kpi .value {{font-size: 1.9rem; font-weight: 750; line-height: 1.15; margin-top: 6px;}}
+          .kpi .sub {{font-size: .8rem; color: {COLOR_MUTED}; margin-top: 2px;}}
+
+          /* --- connector rows --- */
+          .conn-card {{
+            background: #fff; border: 1px solid #e7ebf0; border-radius: 14px;
+            padding: 6px 4px; box-shadow: 0 1px 2px rgba(16,24,40,.04);
+          }}
+          .conn-row {{
+            display: grid; grid-template-columns: 230px 1fr 150px 78px;
+            align-items: center; gap: 16px; padding: 12px 18px;
+            border-bottom: 1px solid #f1f4f8;
+          }}
+          .conn-row:last-child {{border-bottom: none;}}
+          .conn-name {{font-weight: 650; font-size: .92rem;}}
+          .conn-type {{color: {COLOR_MUTED}; font-size: .74rem; font-weight: 500;}}
+          .track {{background: #eef2f7; border-radius: 999px; height: 9px; width: 100%; overflow: hidden;}}
+          .fill {{height: 100%; border-radius: 999px;}}
+          .conn-meta {{font-size: .8rem; color: {COLOR_MUTED}; text-align: right;
+            font-variant-numeric: tabular-nums;}}
+          .pill {{font-size: .68rem; font-weight: 700; letter-spacing: .03em;
+            padding: 4px 10px; border-radius: 999px; color: #fff; text-align: center;}}
+
+          /* --- section headings --- */
+          .sec {{font-size: 1.05rem; font-weight: 700; margin: 26px 0 12px;}}
+          .sec .hint {{font-weight: 400; color: {COLOR_MUTED}; font-size: .85rem;}}
+
+          /* --- activity table --- */
+          .act {{background:#fff; border:1px solid #e7ebf0; border-radius:14px; overflow:hidden;
+            box-shadow: 0 1px 2px rgba(16,24,40,.04);}}
+          .act-row {{display:grid; grid-template-columns: 200px 1fr 90px; align-items:center;
+            gap:16px; padding: 11px 18px; border-bottom:1px solid #f1f4f8; font-size:.86rem;}}
+          .act-row:last-child {{border-bottom:none;}}
+          .act-time {{color:{COLOR_MUTED}; font-variant-numeric: tabular-nums;}}
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
+
+
+def header_bar():
+    mode = "Live data" if USE_LIVE_DATA else "Sample data"
+    st.markdown(
+        f"""
+        <div class="app-header">
+          <div>
+            <h1>MAR Guardrail</h1>
+            <div class="sub">Monitor Fivetran MAR spend &middot; alert or pause connectors before they overrun.</div>
+          </div>
+          <div class="mode-pill">{mode}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def kpi(label, value, sub, accent):
+    return (
+        f"<div class='kpi' style='--accent:{accent}'>"
+        f"<div class='label'>{label}</div>"
+        f"<div class='value'>{value}</div>"
+        f"<div class='sub'>{sub}</div></div>"
+    )
+
+
+def section(title, hint=""):
+    hint_html = f" <span class='hint'>— {hint}</span>" if hint else ""
+    st.markdown(f"<div class='sec'>{title}{hint_html}</div>", unsafe_allow_html=True)
+
+
+# ===========================================================================
+# COMPONENTS
+# ===========================================================================
+def render_overview(df):
+    """KPI tiles + per-connector progress bars, all from the connector frame."""
+    total_mar = int(df["mar"].sum()) if not df.empty else 0
+    active = len(df)
+    over = int((df["status"] == "OVER").sum()) if not df.empty else 0
+    near = int((df["status"] == "NEAR").sum()) if not df.empty else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(kpi("Paid MAR this month", f"{total_mar:,}", "across all connectors", "#4f46e5"),
+                unsafe_allow_html=True)
+    c2.markdown(kpi("Active connectors", f"{active}", "reporting paid MAR", "#0ea5e9"),
+                unsafe_allow_html=True)
+    c3.markdown(kpi("Over limit", f"{over}", "exceeding their cap", COLOR_OVER),
+                unsafe_allow_html=True)
+    c4.markdown(kpi("Near limit", f"{near}", f"at {int(NEAR_LIMIT_RATIO*100)}%+ of cap", COLOR_NEAR),
+                unsafe_allow_html=True)
+
+    section("Connectors", "MAR against limit, most at-risk first")
+    if df.empty:
+        st.info("No connectors reporting paid MAR this month.")
+        return
+
+    rows = []
+    for _, r in df.iterrows():
+        color = STATUS_COLOR[r["status"]]
+        pct = min(r["ratio"] * 100, 100)
+        rows.append(
+            f"<div class='conn-row'>"
+            f"<div class='conn-name'>{r['connection']}<br><span class='conn-type'>{r['type']}</span></div>"
+            f"<div class='track'><div class='fill' style='width:{pct:.1f}%;background:{color}'></div></div>"
+            f"<div class='conn-meta'>{int(r['mar']):,} / {int(r['limit']):,}<br>{r['ratio']*100:.0f}% of limit</div>"
+            f"<div class='pill' style='background:{color}'>{r['status']}</div>"
+            f"</div>"
+        )
+    st.markdown("<div class='conn-card'>" + "".join(rows) + "</div>", unsafe_allow_html=True)
 
 
 def render_connector_selector(card_key, mar_data):
     """Grouped, scrollable connector multi-select for one trigger card.
 
-    Connector types are expandable (one st.expander each) so multiple instances
-    collapse neatly. The whole thing lives in a fixed-height container so it
-    scrolls vertically only once it passes ~10 rows. Returns the list of
-    selected connection_names."""
+    Returns the list of selected connection_names."""
     selected = []
     with st.container(height=SCROLL_HEIGHT_PX):
         for connector_type, instances in mar_data.items():
-            # Expanded by default when a type has multiple instances, so the
-            # "multiple instances" case is visible without an extra click.
             with st.expander(f"{connector_type}  ({len(instances)})", expanded=len(instances) > 1):
                 for connection_name in instances:
                     if st.checkbox(connection_name, key=f"{card_key}_sel_{connection_name}"):
@@ -122,12 +309,9 @@ def render_connector_selector(card_key, mar_data):
 
 
 def render_limit_inputs(card_key, selected, mar_data):
-    """The 'Set MAR limit' section that appears AFTER connectors are selected.
-
-    Same scrollable-window pattern as the selector: one positive-integer input
-    per selected connector, with inline validation."""
+    """One positive-integer MAR-limit input per selected connector, with inline
+    validation. Shows current MAR next to each as context."""
     st.markdown("**Set MAR limit** — one per selected connector")
-    # Flatten so we can show the current MAR next to each input as context.
     current_mar = {n: m for inst in mar_data.values() for n, m in inst.items()}
     with st.container(height=SCROLL_HEIGHT_PX):
         for connection_name in selected:
@@ -138,7 +322,6 @@ def render_limit_inputs(card_key, selected, mar_data):
                 value=configured_limit(connection_name),
                 key=f"{card_key}_lim_{connection_name}",
             )
-            # Inline validation — the framework's rule is "positive integer > 0".
             if value <= 0:
                 st.error("Limit must be a positive integer greater than 0.")
 
@@ -146,82 +329,79 @@ def render_limit_inputs(card_key, selected, mar_data):
 def render_trigger_card(card_key, title, description, mar_data):
     """One trigger card: enable toggle -> connector select -> limit inputs.
 
-    All four channels (pause/slack/email/webhook) share this exact layout so
-    the demo stays consistent and the pattern is obvious to copy."""
+    All four channels share this layout so the pattern is obvious to copy."""
     with st.container(border=True):
-        st.subheader(title)
+        st.markdown(f"**{title}**")
         st.caption(description)
         enabled = st.toggle("Enable this trigger", key=f"{card_key}_toggle")
         if not enabled:
             return
-
         selected = render_connector_selector(card_key, mar_data)
-        # The limit section only appears once something is selected — keeps the
-        # card compact until there's actually a connector to configure.
         if selected:
             render_limit_inputs(card_key, selected, mar_data)
         else:
             st.info("Select one or more connectors to set their MAR limits.")
 
 
+def render_activity():
+    section("Activity log", "most recent guardrail actions")
+    if "activity" not in st.session_state:
+        st.session_state.activity = seed_activity_log()
+    rows = []
+    for e in st.session_state.activity:
+        color = BADGE_COLORS.get(e["status"], COLOR_MUTED)
+        rows.append(
+            f"<div class='act-row'>"
+            f"<div class='act-time'>{e['time'].strftime('%Y-%m-%d %H:%M:%S')}</div>"
+            f"<div>{e['connection']}</div>"
+            f"<div class='pill' style='background:{color}'>{e['status']}</div>"
+            f"</div>"
+        )
+    st.markdown("<div class='act'>" + "".join(rows) + "</div>", unsafe_allow_html=True)
+
+
 # ===========================================================================
 # PAGE
 # ===========================================================================
-st.set_page_config(page_title="MAR Guardrail", layout="wide")
-st.title("MAR Guardrail — demo console")
-st.caption(
-    "Demo interface only — not required to run the framework. "
-    "Selections here are local UI state and are never written back to config.py."
-)
+st.set_page_config(page_title="MAR Guardrail", layout="wide", page_icon="🛡️")
+inject_css()
+header_bar()
 
 mar_data = load_mar()
+df = connector_frame(mar_data)
 
-# --- Account overview ------------------------------------------------------
-# Flatten the grouped data once for the top-line metrics.
-flat = {n: m for inst in mar_data.values() for n, m in inst.items()}
-total_paid_mar = sum(flat.values())
-active_count = len(flat)
-near_limit = [
-    n for n, m in flat.items() if m >= NEAR_LIMIT_RATIO * configured_limit(n)
-]
+render_overview(df)
 
-st.header("Account overview")
-col1, col2, col3 = st.columns(3)
-col1.metric("Total paid MAR (this month)", f"{total_paid_mar:,}")
-col2.metric("Active connectors", active_count)
-col3.metric("Near or over limit", len(near_limit))
-if near_limit:
-    st.warning("At or above 80% of limit: " + ", ".join(near_limit))
+# MAR-by-connector chart for an at-a-glance comparison.
+section("MAR by connector", "current paid MAR per connection")
+if not df.empty:
+    chart_df = df.set_index("connection")["mar"]
+    st.bar_chart(chart_df, height=260, color=COLOR_INK)
 
-# --- Trigger cards ---------------------------------------------------------
-st.header("Triggers")
-render_trigger_card(
-    "pause", "Pause connector",
-    "Hard stop — pauses the connector in Fivetran when it exceeds its limit.",
-    mar_data,
-)
-render_trigger_card(
-    "slack", "Slack alert",
-    "Posts a message to your Slack incoming webhook.",
-    mar_data,
-)
-render_trigger_card(
-    "email", "Email alert",
-    "Sends an SMTP email to your configured recipients.",
-    mar_data,
-)
-render_trigger_card(
-    "webhook", "Custom webhook",
-    "POSTs the alert to any HTTP endpoint (PagerDuty, Opsgenie, your own service).",
-    mar_data,
-)
+section("Triggers", "what happens when a connector crosses its limit")
+st.caption("Selections here are local UI state and are never written back to config.py.")
+t1, t2 = st.columns(2)
+with t1:
+    render_trigger_card(
+        "pause", "Pause connector",
+        "Hard stop — pauses the connector in Fivetran when it exceeds its limit.",
+        mar_data,
+    )
+    render_trigger_card(
+        "email", "Email alert",
+        "Sends an SMTP email to your configured recipients.",
+        mar_data,
+    )
+with t2:
+    render_trigger_card(
+        "slack", "Slack alert",
+        "Posts a message to your Slack incoming webhook.",
+        mar_data,
+    )
+    render_trigger_card(
+        "webhook", "Custom webhook",
+        "POSTs the alert to any HTTP endpoint (PagerDuty, Opsgenie, your own service).",
+        mar_data,
+    )
 
-# --- Activity log ----------------------------------------------------------
-st.header("Activity log")
-if "activity" not in st.session_state:
-    st.session_state.activity = seed_activity_log()
-for entry in st.session_state.activity:
-    cols = st.columns([2, 3, 1])
-    cols[0].write(entry["time"].strftime("%Y-%m-%d %H:%M:%S"))
-    cols[1].write(entry["connection"])
-    cols[2].markdown(badge(entry["status"]), unsafe_allow_html=True)
+render_activity()
