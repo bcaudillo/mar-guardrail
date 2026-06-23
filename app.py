@@ -125,10 +125,8 @@ def render_limit_inputs(card_key, selected, mar_data):
     """The 'Set MAR limit' section that appears AFTER connectors are selected.
 
     Same scrollable-window pattern as the selector: one positive-integer input
-    per selected connector, with inline validation. Returns {name: limit} for
-    the inputs that are currently valid."""
+    per selected connector, with inline validation."""
     st.markdown("**Set MAR limit** — one per selected connector")
-    limits = {}
     # Flatten so we can show the current MAR next to each input as context.
     current_mar = {n: m for inst in mar_data.values() for n, m in inst.items()}
     with st.container(height=SCROLL_HEIGHT_PX):
@@ -143,9 +141,6 @@ def render_limit_inputs(card_key, selected, mar_data):
             # Inline validation — the framework's rule is "positive integer > 0".
             if value <= 0:
                 st.error("Limit must be a positive integer greater than 0.")
-            else:
-                limits[connection_name] = int(value)
-    return limits
 
 
 def render_trigger_card(card_key, title, description, mar_data):

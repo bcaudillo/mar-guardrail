@@ -22,11 +22,16 @@ def get_current_mar():
     measured in the current month. Connections with zero paid MAR this month
     simply won't appear in the result.
     """
-    # First day of the current month. incremental_mar stamps each row with the
-    # month it was measured in, so we scope to "this month" by comparing
-    # against month boundaries rather than a rolling 30-day window — MAR is
-    # billed per calendar month, so that's what the limit should track.
+    # First day of the current month, and first day of the NEXT month. MAR is
+    # billed per calendar month, so we scope to "this month" by bounding both
+    # ends — measured_month >= this month AND < next month — rather than a
+    # rolling 30-day window or an open-ended >= that would also fold in any
+    # future-dated rows.
     month_start = date.today().replace(day=1)
+    if month_start.month == 12:
+        next_month_start = month_start.replace(year=month_start.year + 1, month=1)
+    else:
+        next_month_start = month_start.replace(month=month_start.month + 1)
 
     # WHY free_type = 'PAID':
     #   Fivetran tags every MAR row as PAID or FREE. Free MAR (e.g. the first
@@ -38,6 +43,7 @@ def get_current_mar():
         FROM incremental_mar
         WHERE free_type = 'PAID'
           AND measured_month >= %s
+          AND measured_month < %s
         GROUP BY connection_name
     """
 
@@ -45,7 +51,7 @@ def get_current_mar():
     # raises, so we never leak a connection back to Neon's pool.
     with psycopg2.connect(DATABASE_URL) as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (month_start,))
+            cur.execute(sql, (month_start, next_month_start))
             rows = cur.fetchall()
 
     return {connection_name: int(total_mar) for connection_name, total_mar in rows}
