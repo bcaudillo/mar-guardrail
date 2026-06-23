@@ -56,6 +56,33 @@ it your own.
 
 ---
 
+## Database support
+
+The Platform Connector lands its data in **your** destination, and this
+framework reads it through [SQLAlchemy](https://www.sqlalchemy.org/) — so it
+works with **any** database SQLAlchemy supports (Postgres, Snowflake, BigQuery,
+Redshift, Databricks, MySQL, and more). You pick the database with two settings:
+
+1. **`DATABASE_URL`** — a SQLAlchemy connection URL for your destination:
+
+   | Destination | Example URL |
+   |-------------|-------------|
+   | Postgres | `postgresql://user:pass@host:5432/dbname` |
+   | Snowflake | `snowflake://user:pass@account/dbname?warehouse=WH&role=ROLE` |
+   | BigQuery | `bigquery://project/dataset` |
+   | Redshift | `redshift+psycopg2://user:pass@host:5439/dbname` |
+
+2. **`FIVETRAN_PLATFORM_SCHEMA`** — the schema (BigQuery: dataset) the Platform
+   Connector writes into, e.g. `fivetran_platform`. This lets the query find
+   `incremental_mar` no matter what the connection's default search path is.
+
+Postgres works out of the box. For another destination, install its driver
+(the comments in `requirements.txt` list the package per database) — the query
+itself is standard SQL and doesn't change. The framework only ever **reads**
+one table (`incremental_mar`), so a **read-only** database user is enough.
+
+---
+
 ## How to schedule it
 
 `main.py` runs one check and exits — you decide how often to run it. Pick

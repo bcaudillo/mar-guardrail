@@ -24,15 +24,28 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # DATABASE
 # ---------------------------------------------------------------------------
-# Where the Fivetran Platform Connector lands its data. The default below is
-# the Neon connection-string shape; swap it for your own destination in ONE
-# line by changing this value (or the DATABASE_URL env var). Any PostgreSQL
-# destination works because we connect with psycopg2 — Snowflake/BigQuery
-# users would swap the driver in query.py instead.
+# Where the Fivetran Platform Connector lands its data. The framework connects
+# through SQLAlchemy, so ANY database works — you choose it entirely by this
+# URL (and by installing that database's driver; see requirements.txt). Use a
+# SQLAlchemy connection URL:
+#
+#   Postgres : postgresql://user:password@host:5432/dbname
+#   Snowflake: snowflake://user:password@account/dbname?warehouse=WH&role=ROLE
+#   BigQuery : bigquery://project/dataset
+#   Redshift : redshift+psycopg2://user:password@host:5439/dbname
+#   Databricks: databricks://token:<token>@host?http_path=...&catalog=...
+#
+# Swap destinations by changing this one line (or the DATABASE_URL env var).
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://user:password@host.neon.tech/dbname?sslmode=require",
 )
+
+# The schema (BigQuery: dataset) the Platform Connector writes its tables into,
+# e.g. "fivetran_platform". Setting this means the MAR query finds
+# incremental_mar regardless of the connection's search_path. Leave it blank to
+# use the connection's default schema.
+PLATFORM_SCHEMA = os.getenv("FIVETRAN_PLATFORM_SCHEMA", "fivetran_platform")
 
 
 # ---------------------------------------------------------------------------

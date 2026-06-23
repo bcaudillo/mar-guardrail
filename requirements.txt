@@ -1,8 +1,17 @@
 # Minimal dependencies — only what the framework actually imports.
-# psycopg2-binary : PostgreSQL driver for query.py (no system build needed)
+# SQLAlchemy      : database-agnostic connection layer for query.py
+# psycopg2-binary : PostgreSQL driver (the default destination; no system build)
 # requests        : Fivetran REST API + Slack/custom webhook calls
 # streamlit       : the demo UI in app.py (not needed for main.py to run)
 # python-dotenv   : loads secrets from .env into config.py
+#
+# Using a different destination? Keep the lines below and add ITS driver:
+#   Snowflake  -> snowflake-sqlalchemy
+#   BigQuery   -> sqlalchemy-bigquery
+#   Redshift   -> sqlalchemy-redshift   (plus redshift-connector or psycopg2)
+#   Databricks -> databricks-sqlalchemy
+#   MySQL      -> pymysql
+SQLAlchemy
 psycopg2-binary
 requests
 streamlit
