@@ -1,6 +1,7 @@
 # query.py
 #
-# Reads current-month MAR from the Fivetran Platform Connector's destination.
+# Reads current-month PAID MAR from the Fivetran Platform Connector's
+# destination, and exposes a small connection probe for the UI's debug panel.
 #
 # Database-agnostic by design: we connect through SQLAlchemy, so the SAME code
 # runs against Postgres, Snowflake, BigQuery, Redshift, Databricks, MySQL, and
@@ -14,12 +15,11 @@ from datetime import date
 
 from sqlalchemy import bindparam, create_engine, text
 
-from config import DATABASE_URL, MAR_FREE_TYPES, PLATFORM_SCHEMA
+from config import DATABASE_URL, PLATFORM_SCHEMA
 
-# One engine per process, created lazily so simply importing this module (e.g.
-# the Streamlit demo running on sample data) never opens a connection.
-# pool_pre_ping quietly recycles a stale connection instead of erroring on a
-# socket the database closed underneath us.
+# One engine per process, created lazily so simply importing this module never
+# opens a connection. pool_pre_ping quietly recycles a stale connection instead
+# of erroring on a socket the database closed underneath us.
 _engine = None
 
 
@@ -53,76 +53,102 @@ def _table_ref():
     return f"{PLATFORM_SCHEMA}.incremental_mar"
 
 
-def get_current_mar(free_types=None, start=None, end=None):
-    """Return {connection_name: total_mar} for a measured_date window.
+def _current_month_window():
+    """Half-open [first-of-this-month, first-of-next-month). MAR is billed per
+    calendar month, so we bound both ends rather than using a rolling window or
+    an open-ended >= that would fold in future-dated rows."""
+    start = date.today().replace(day=1)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start, end
 
-    Only rows whose free_type is in `free_types` are counted (defaults to
-    config.MAR_FREE_TYPES — normally ["PAID"]). Connections with zero matching
-    MAR in the window simply won't appear in the result.
 
-    Time window (half-open [start, end)):
-      - start and end both omitted -> the current calendar month (the normal
-        guardrail behavior: MAR is billed per month).
-      - pass explicit dates to widen or shift it. The demo UI uses this for an
-        "All time" view so historical data (e.g. last month's rows) still shows.
+def _fetch_mar(free_types, start, end):
+    """Run the grouped MAR query and return rows of (schema_name, connection_name,
+    total_mar). Shared by the public readers below.
 
-    Pass free_types to override the configured default for one call (e.g. the
-    demo UI lets you view SYSTEM rows on a free account that has no PAID MAR).
-    """
-    # None means "use the configured default"; an explicitly empty list is a
-    # caller error (an IN () clause is invalid SQL), so reject it loudly.
-    types = list(MAR_FREE_TYPES if free_types is None else free_types)
+    `free_type IN :free_types` uses an expanding bind param: SQLAlchemy expands
+    the list into the right number of placeholders for the target database, so
+    the type list is bound safely (never string-formatted into the SQL). Named
+    params (:start / :end) likewise render in whatever style the DB expects."""
+    types = [t for t in free_types]
     if not types:
         raise ValueError("free_types is empty — specify at least one MAR free_type.")
-    # First day of the current month, and first day of the NEXT month. MAR is
-    # billed per calendar month, so we scope to "this month" by bounding both
-    # ends — measured_date >= this month AND < next month — rather than a
-    # rolling 30-day window or an open-ended >= that would also fold in any
-    # future-dated rows. incremental_mar stamps each row with a daily
-    # measured_date (there is no measured_month column — that only appears as a
-    # date_trunc() expression in Fivetran's sample queries), so a half-open
-    # [month_start, next_month_start) range captures exactly this month's days.
-    if start is None and end is None:
-        # Default: the current calendar month, bounded on both ends so we capture
-        # exactly this month's days and never fold in future-dated rows.
-        start = date.today().replace(day=1)
-        if start.month == 12:
-            end = start.replace(year=start.year + 1, month=1)
-        else:
-            end = start.replace(month=start.month + 1)
-    else:
-        # Caller widened/shifted the window; fill in an open side with a bound
-        # wide enough to mean "no limit" in practice.
-        start = start or date(1970, 1, 1)
-        end = end or date(2999, 1, 1)
 
-    # WHY filter on free_type:
-    #   Fivetran tags every MAR row PAID (billable), SYSTEM (its own internal
-    #   MAR), or FREE. A real guardrail counts only PAID, so it never false-alarms
-    #   on rows that don't cost money. Which types to count is configurable
-    #   (config.MAR_FREE_TYPES) so a free account — which has no PAID rows — can
-    #   still see live SYSTEM numbers while testing.
-    #
-    # `free_type IN :free_types` uses an expanding bind param: SQLAlchemy expands
-    # the list into the right number of placeholders for the target database, so
-    # the type list is bound safely (never string-formatted into the SQL). Named
-    # params (:start / :end) likewise render in whatever style the DB expects.
     sql = text(
         f"""
-        SELECT connection_name, SUM(incremental_rows) AS total_mar
+        SELECT schema_name, connection_name, SUM(incremental_rows) AS total_mar
         FROM {_table_ref()}
         WHERE free_type IN :free_types
           AND measured_date >= :start
           AND measured_date < :end
-        GROUP BY connection_name
+        GROUP BY schema_name, connection_name
         """
     ).bindparams(bindparam("free_types", expanding=True))
 
-    # The `with` block guarantees the connection is returned to the pool even if
-    # the query raises, so we never leak one.
     with _get_engine().connect() as conn:
         result = conn.execute(
-            sql,
-            {"free_types": types, "start": start, "end": end},
+            sql, {"free_types": types, "start": start, "end": end}
         )
-        return {connection_name: int(total_mar) for connection_name, total_mar in result}
+        return [(s, c, int(m)) for s, c, m in result]
+
+
+def get_current_mar():
+    """Return {connection_name: total_mar} of current-month PAID MAR.
+
+    This is the guardrail's core read (used by main.py): PAID rows only, current
+    calendar month only. Connections with zero paid MAR this month won't appear.
+    """
+    start, end = _current_month_window()
+    rows = _fetch_mar(["PAID"], start, end)
+    return {connection_name: total for _, connection_name, total in rows}
+
+
+def get_mar_by_schema(free_types=("PAID",), all_time=False):
+    """Return {schema_name: {connection_name: total_mar}} for the UI.
+
+    Defaults match the guardrail (PAID, current month). The demo's debug panel
+    passes free_types=("SYSTEM",) and/or all_time=True as an escape hatch so a
+    free Fivetran account — which has no PAID rows — can still see live data.
+    """
+    if all_time:
+        start, end = date(1970, 1, 1), date(2999, 1, 1)
+    else:
+        start, end = _current_month_window()
+
+    grouped = {}
+    for schema_name, connection_name, total in _fetch_mar(list(free_types), start, end):
+        grouped.setdefault(schema_name or "(no schema)", {})[connection_name] = total
+    return grouped
+
+
+def check_connection():
+    """Probe the database without raising. Returns a dict the debug panel renders:
+
+        {"ok": bool,            # did we connect at all?
+         "error": str | None,   # the exact failure message when ok is False
+         "table": str,          # the schema-qualified table we look for
+         "table_found": bool}   # did incremental_mar resolve?
+
+    This is what powers the observability panel's "explain exactly why" — we hand
+    back the real exception text, not a generic 'failed'."""
+    try:
+        table = _table_ref()
+    except ValueError as exc:  # bad PLATFORM_SCHEMA identifier
+        return {"ok": False, "error": str(exc), "table": "?", "table_found": False}
+
+    try:
+        with _get_engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001 — surface any driver/connection error verbatim
+        return {"ok": False, "error": str(exc), "table": table, "table_found": False}
+
+    # Connected. Now see whether the MAR table actually resolves.
+    try:
+        with _get_engine().connect() as conn:
+            conn.execute(text(f"SELECT 1 FROM {table} WHERE 1 = 0"))
+        return {"ok": True, "error": None, "table": table, "table_found": True}
+    except Exception as exc:  # noqa: BLE001 — connected but table missing/unreadable
+        return {"ok": True, "error": str(exc), "table": table, "table_found": False}

@@ -48,18 +48,6 @@ DATABASE_URL = os.getenv(
 # Connector setups land in "fivetran_platform", others in "fivetran_metadata".
 PLATFORM_SCHEMA = os.getenv("FIVETRAN_PLATFORM_SCHEMA", "fivetran_metadata")
 
-# Which MAR rows to count. Fivetran tags every incremental_mar row with a
-# free_type: "PAID" (billable — what a real guardrail watches), "SYSTEM"
-# (Fivetran's internal MAR), or "FREE". Keep this ["PAID"] for production. A
-# FREE Fivetran account has no PAID rows, so set MAR_FREE_TYPES=SYSTEM (env, or
-# edit the default here) to see live numbers while testing. Comma-separated in
-# the env var, e.g. MAR_FREE_TYPES=PAID,SYSTEM.
-MAR_FREE_TYPES = [
-    t.strip().upper()
-    for t in os.getenv("MAR_FREE_TYPES", "PAID").split(",")
-    if t.strip()
-] or ["PAID"]
-
 
 # ---------------------------------------------------------------------------
 # FIVETRAN API
@@ -176,3 +164,37 @@ def validate_config():
                 f"'{name}': unknown trigger(s) {sorted(unknown)}. "
                 f"Valid options are {sorted(valid_triggers)}."
             )
+
+
+def _is_set(value):
+    """A secret/URL counts as 'set' only if it's non-empty and not an obvious
+    placeholder left over from .env.example."""
+    if not value:
+        return False
+    placeholders = ("your_", "user:password@", "host.neon.tech")
+    return not any(p in value for p in placeholders)
+
+
+def config_state():
+    """Report what config currently knows — no secrets, just presence. The UI's
+    debug panel renders this as part of the pre-flight system state so you can
+    see, before anything runs, what is and isn't configured."""
+    try:
+        validate_config()
+        config_valid, config_error = True, None
+    except ValueError as exc:
+        config_valid, config_error = False, str(exc)
+
+    channels = sorted({t for c in CONNECTORS for t in c.get("triggers", [])})
+    return {
+        "config_valid": config_valid,
+        "config_error": config_error,
+        "database_url_set": _is_set(DATABASE_URL),
+        "platform_schema": PLATFORM_SCHEMA or "(connection default)",
+        "connector_count": len(CONNECTORS),
+        "configured_channels": channels,
+        "fivetran_creds_set": _is_set(FIVETRAN_API_KEY) and _is_set(FIVETRAN_API_SECRET),
+        "slack_set": _is_set(SLACK_WEBHOOK_URL),
+        "email_set": _is_set(EMAIL_SMTP_CONFIG["username"]) and bool(EMAIL_SMTP_CONFIG["to_addrs"]),
+        "webhook_set": _is_set(CUSTOM_WEBHOOK_URL),
+    }

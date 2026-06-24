@@ -123,21 +123,33 @@ new ones slot right in.
 
 ---
 
-## How to point the Streamlit demo at your data
+## The Streamlit demo console
 
-The Streamlit app (`app.py`) is a **demo layer only** — it is not required to
-run the framework. It's there to show what's possible and to be a starting
-point for your own UI.
+The Streamlit app (`app.py`) is a **demo / UI layer only** — it is not required
+to run the framework (`main.py` is). All real logic stays in the core modules
+(`config.py`, `query.py`, `fivetran_api.py`, `triggers.py`, `state.py`); the app
+only renders what they return.
 
 ```bash
 streamlit run app.py
 ```
 
-Out of the box it runs on built-in sample data, so it works with zero setup.
-When you're ready to show real numbers, open `app.py` and set
-`USE_LIVE_DATA = True` — it will then read from the same query the framework
-uses. Note that the demo's connector picks and limit inputs are independent UI
-state; the demo never writes back to `config.py`.
+- **Live by default.** On load it reads real current-month **PAID** MAR from your
+  destination, grouped by schema. A low-prominence **Demo** toggle switches to
+  bundled sample data for layout/testing without a database.
+- **Debug panel.** A **Debug** button toggles an inline panel showing the
+  pre-flight **system state** (config loaded, database connection, MAR table,
+  Fivetran API reachable) — with the *exact* reason when something fails — plus
+  the captured console log. No popups.
+- **Connectors** are grouped by schema, multi-select, and scroll vertically
+  (~10 rows). Each selected connector takes an **integer** MAR limit (no
+  percentages, no cost math) and shows a live OVER/OK status.
+- The demo's selections and limits are independent UI state; it never writes
+  back to `config.py`.
+
+> On a **free** Fivetran account there are no PAID rows (only `SYSTEM` metadata),
+> so the live view is empty by design. The Debug panel has an escape hatch
+> (*View SYSTEM rows* / *All time*) to see that data while testing.
 
 ---
 

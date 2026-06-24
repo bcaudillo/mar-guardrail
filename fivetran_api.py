@@ -18,6 +18,10 @@ import requests
 
 from config import FIVETRAN_API_KEY, FIVETRAN_API_SECRET
 
+# Obvious leftovers from .env.example — treat these as "not configured" so the
+# debug panel doesn't claim the API is set up when it plainly isn't.
+_PLACEHOLDER_CREDS = ("", "your_fivetran_api_key", "your_fivetran_api_secret")
+
 # Base URL for Fivetran's v1 REST API. Pinned as a constant so there's a
 # single place to change it if Fivetran ever versions the path.
 FIVETRAN_BASE_URL = "https://api.fivetran.com/v1"
@@ -28,6 +32,34 @@ _AUTH = (FIVETRAN_API_KEY, FIVETRAN_API_SECRET)
 
 # Don't let a hung Fivetran request stall the whole guardrail run.
 _TIMEOUT_SECONDS = 30
+
+
+def check_api():
+    """Probe Fivetran reachability without raising. Returns a dict the debug
+    panel renders:
+
+        {"ok": bool,          # creds set AND the API answered 2xx
+         "configured": bool,  # are real (non-placeholder) creds present?
+         "error": str | None} # exact reason when not ok
+
+    Used for observability only — it never pauses anything."""
+    if FIVETRAN_API_KEY in _PLACEHOLDER_CREDS or FIVETRAN_API_SECRET in _PLACEHOLDER_CREDS:
+        return {"ok": False, "configured": False,
+                "error": "Fivetran API key/secret not set (still placeholder)."}
+    try:
+        resp = requests.get(
+            f"{FIVETRAN_BASE_URL}/groups", auth=_AUTH, timeout=_TIMEOUT_SECONDS
+        )
+    except requests.exceptions.RequestException as exc:
+        return {"ok": False, "configured": True, "error": f"Could not reach Fivetran: {exc}"}
+
+    if resp.status_code == 401:
+        return {"ok": False, "configured": True,
+                "error": "Fivetran rejected the credentials (HTTP 401)."}
+    if not resp.ok:
+        return {"ok": False, "configured": True,
+                "error": f"Fivetran returned HTTP {resp.status_code}: {resp.text[:200]}"}
+    return {"ok": True, "configured": True, "error": None}
 
 
 def _find_connection_id(connection_name):
