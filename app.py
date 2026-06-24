@@ -124,21 +124,29 @@ def render_limits(selected, flat):
     return limits
 
 
-def run_check(selected, limits, flat, channels, data_mode):
+def run_check(selected, limits, flat, channels, data_mode, really_send):
     """Run one guardrail evaluation over the selected connectors and record it to
     the activity log. Reuses main.evaluate() — the SAME decision logic the real
     CLI uses — so the demo's activity feed matches production behavior.
 
-    Alert dispatch is simulated (logged, never actually sent) so the demo is
-    safe to click repeatedly without paging anyone."""
+    Alert dispatch:
+      - really_send False  -> every channel is simulated (logged, nothing sent).
+      - really_send True   -> Slack/Email/Webhook go through the REAL trigger
+        functions (main._fire_trigger), using the channel config in config.py.
+        Pause is ALWAYS simulated — actually pausing a live connector from a
+        demo button is too dangerous to wire up here."""
     import main  # lazy: pulls in triggers/requests only when a check is run
+
+    # Channels we're willing to dispatch for real. Pause is deliberately absent.
+    REAL_DISPATCH = {"slack", "email", "webhook"}
 
     connectors = [
         {"connection_name": name, "mar_limit": int(limits[name]), "triggers": channels}
         for name in selected
     ]
     state_mod.log_event(
-        f"Guardrail check started ({data_mode}) — {len(connectors)} connector(s)",
+        f"Guardrail check started ({data_mode}) — {len(connectors)} connector(s)"
+        + (" — LIVE dispatch" if really_send else ""),
         level=state_mod.INFO, source="run",
     )
     results = main.evaluate(connectors, flat)
@@ -146,17 +154,25 @@ def run_check(selected, limits, flat, channels, data_mode):
     for result in results:
         if not result["over"]:
             continue
+        name = result["connection_name"]
         if not channels:
             state_mod.log_event(
-                f"{result['connection_name']} is over limit but no alert channels selected",
+                f"{name} is over limit but no alert channels selected",
                 level=state_mod.LOG_WARN, source="run",
             )
+            continue
+        connector = {"connection_name": name, "mar_limit": int(limits[name])}
         for channel in channels:
-            state_mod.log_event(
-                f"[{channel}] alert sent for '{result['connection_name']}' "
-                "(demo — not actually dispatched)",
-                level=state_mod.ACTION, source=channel,
-            )
+            if really_send and channel in REAL_DISPATCH:
+                # Real send — the trigger function logs its own action/error event.
+                main._fire_trigger(channel, connector, result["current_mar"])
+            else:
+                note = ("pause is never fired from the demo" if channel == "pause"
+                        else "demo — not actually dispatched")
+                state_mod.log_event(
+                    f"[{channel}] alert for '{name}' ({note})",
+                    level=state_mod.ACTION, source=channel,
+                )
 
     over_count = sum(1 for r in results if r["over"])
     state_mod.log_event(
@@ -171,8 +187,18 @@ def render_run_controls(selected, limits, flat, data_mode):
         channels = st.multiselect(
             "Alert channels to fire when a connector is over",
             ALERT_CHANNELS, default=["slack"],
-            help="Simulated in the demo — events are logged, nothing is actually sent.",
+            help="Pick which triggers fire for over-limit connectors.",
         )
+        really_send = st.checkbox(
+            "Actually send Slack / Email / Webhook alerts",
+            key="really_send", value=False,
+            help="On: those three channels really send using your config.py "
+                 "settings (the original trigger behavior). Off: everything is "
+                 "simulated. Pause is always simulated regardless.",
+        )
+        if really_send:
+            st.caption(":red[Live dispatch — Slack/Email/Webhook alerts will "
+                       "really be sent using your configured channels.]")
         run_col, clear_col = st.columns(2)
         run_clicked = run_col.button(
             "Run guardrail check", key="run_btn", type="primary",
@@ -184,7 +210,7 @@ def render_run_controls(selected, limits, flat, data_mode):
         if not selected:
             st.caption("Select at least one connector above to run a check.")
     if run_clicked:
-        run_check(selected, limits, flat, channels, data_mode)
+        run_check(selected, limits, flat, channels, data_mode, really_send)
 
 
 def render_activity_log():

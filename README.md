@@ -147,9 +147,12 @@ streamlit run app.py
 - **Run guardrail check** evaluates the selected connectors against their limits
   using the *same* `main.evaluate()` logic the CLI uses, and records each result
   to the **activity log** — a timestamped feed of what the guardrail did (checks,
-  over-limit alerts, and the alert channels it fired). Alert dispatch in the demo
-  is **simulated** (logged, never actually sent) so it's safe to click. Real
-  `main.py` runs in the same process feed the same log.
+  over-limit alerts, and the alert channels it fired). By default dispatch is
+  **simulated** (logged, never sent). Tick **"Actually send Slack / Email /
+  Webhook alerts"** to route those three through the real `trigger_*` functions
+  using your `config.py` settings — the original trigger behavior. **Pause is
+  always simulated** in the demo. Real `main.py` runs in the same process feed
+  the same log.
 - The demo's selections and limits are independent UI state; it never writes
   back to `config.py`.
 
