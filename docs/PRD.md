@@ -114,6 +114,26 @@ sync loop — and catch it **early, mid-month**, before it accumulates into a
 budget breach. The Platform Connector is what makes that baseline possible; a
 static limit alone can't see a spike coming.
 
+### 5.1a Two surfaces: read vs. act
+
+The product talks to Fivetran through **two distinct integration surfaces**, and
+keeping them separate is core to the design:
+
+| | **Read / detect** | **Act** |
+|---|---|---|
+| Surface | Platform Connector → destination tables | **Fivetran REST API** (`api.fivetran.com/v1`) |
+| Nature | Batch, queryable history (SQL) | Live, state-changing (HTTP) |
+| Auth | Database connection (`DATABASE_URL`) | API key + secret (HTTP Basic) |
+| Used for | MAR, baselines, trends, anomaly detection | **Pausing / resuming connectors**, live status |
+| Code | `query.py` | `fivetran_api.py` **[VERIFIED]** |
+
+So: we **detect** by reading the warehouse the Platform Connector populates, and
+we **act** by calling the **Fivetran REST API**. Pausing a connector is a
+`PATCH /connections/{id}` with `{"paused": true}` (resume is the same call with
+`false`); resolving a connector name to its API id is a walk of
+`/groups` → `/connections`. All state changes go through the REST API — the
+destination tables are read-only to this product. **[VERIFIED]**
+
 ### 5.2 The loop (the spine)
 
 The product's reason to exist, mapped to what already works:
@@ -124,8 +144,9 @@ The product's reason to exist, mapped to what already works:
      `main.evaluate()` **[VERIFIED]**
    - **Anomaly** — a day's MAR deviating from the connector's recent baseline,
      independent of the monthly cap (early warning). **[OPEN — see OPEN-8]**
-2. **Act** — fire the connector's configured triggers in order. The hard stop is
-   pause. → `triggers.py`, `fivetran_api.pause_connector()` **[VERIFIED]**
+2. **Act** — fire the connector's configured triggers in order, executing state
+   changes through the **Fivetran REST API**. The hard stop is pause. →
+   `triggers.py`, `fivetran_api.pause_connector()` **[VERIFIED]**
 3. **Record** — append a structured event (who, what, when, outcome) to the
    activity log. → `state.log_event()` **[VERIFIED, but in-memory only — see OPEN-2]**
 4. **Surface** — show all of the above in one UI with a debug/observability
