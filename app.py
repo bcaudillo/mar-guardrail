@@ -34,6 +34,14 @@ SCROLL_HEIGHT_PX = 340
 STATUS_ICON = {state_mod.OK: "✅", state_mod.WARN: "⚠️",
                state_mod.ERROR: "❌", state_mod.SKIP: "➖"}
 
+# Activity-log level -> icon. Mirrors the levels state.log_event records.
+ACTIVITY_ICON = {state_mod.INFO: "•", state_mod.ACTION: "✅", state_mod.ALERT: "🚨",
+                 state_mod.LOG_WARN: "⚠️", state_mod.LOG_ERROR: "❌"}
+
+# Channels the demo can "fire" when a connector is over. The send is simulated
+# (logged, not actually dispatched) so the demo never spams real Slack/email.
+ALERT_CHANNELS = ["pause", "slack", "email", "webhook"]
+
 
 # ---------------------------------------------------------------------------
 # DATA
@@ -114,6 +122,83 @@ def render_limits(selected, flat):
                 "**:red[OVER]**" if mar > limits[conn] else "**:green[OK]**"
             )
     return limits
+
+
+def run_check(selected, limits, flat, channels, data_mode):
+    """Run one guardrail evaluation over the selected connectors and record it to
+    the activity log. Reuses main.evaluate() — the SAME decision logic the real
+    CLI uses — so the demo's activity feed matches production behavior.
+
+    Alert dispatch is simulated (logged, never actually sent) so the demo is
+    safe to click repeatedly without paging anyone."""
+    import main  # lazy: pulls in triggers/requests only when a check is run
+
+    connectors = [
+        {"connection_name": name, "mar_limit": int(limits[name]), "triggers": channels}
+        for name in selected
+    ]
+    state_mod.log_event(
+        f"Guardrail check started ({data_mode}) — {len(connectors)} connector(s)",
+        level=state_mod.INFO, source="run",
+    )
+    results = main.evaluate(connectors, flat)
+
+    for result in results:
+        if not result["over"]:
+            continue
+        if not channels:
+            state_mod.log_event(
+                f"{result['connection_name']} is over limit but no alert channels selected",
+                level=state_mod.LOG_WARN, source="run",
+            )
+        for channel in channels:
+            state_mod.log_event(
+                f"[{channel}] alert sent for '{result['connection_name']}' "
+                "(demo — not actually dispatched)",
+                level=state_mod.ACTION, source=channel,
+            )
+
+    over_count = sum(1 for r in results if r["over"])
+    state_mod.log_event(
+        f"Check complete — {over_count} over limit of {len(results)} checked",
+        level=state_mod.ALERT if over_count else state_mod.INFO, source="run",
+    )
+
+
+def render_run_controls(selected, limits, flat, data_mode):
+    st.subheader("Run")
+    with st.container(border=True):
+        channels = st.multiselect(
+            "Alert channels to fire when a connector is over",
+            ALERT_CHANNELS, default=["slack"],
+            help="Simulated in the demo — events are logged, nothing is actually sent.",
+        )
+        run_col, clear_col = st.columns(2)
+        run_clicked = run_col.button(
+            "Run guardrail check", key="run_btn", type="primary",
+            use_container_width=True, disabled=not selected,
+        )
+        if clear_col.button("Clear log", key="clear_btn", use_container_width=True):
+            state_mod.clear_activity_log()
+            st.rerun()
+        if not selected:
+            st.caption("Select at least one connector above to run a check.")
+    if run_clicked:
+        run_check(selected, limits, flat, channels, data_mode)
+
+
+def render_activity_log():
+    st.subheader("Activity log")
+    events = state_mod.activity_log(newest_first=True)
+    if not events:
+        st.caption("No activity yet — select connectors, set limits, then "
+                   "**Run guardrail check**. Real guardrail runs (main.py) also "
+                   "appear here when run in the same process.")
+        return
+    with st.container(height=320, border=True):
+        for ev in events:
+            icon = ACTIVITY_ICON.get(ev["level"], "•")
+            st.markdown(f"{icon} `{ev['ts']}` **[{ev['source']}]** {ev['message']}")
 
 
 def render_debug_panel(data_mode, console_text, load_error):
@@ -210,6 +295,8 @@ flat = flatten(data)
 overview_slot = st.container()
 selected = render_connectors(data)
 limits = render_limits(selected, flat)
+render_run_controls(selected, limits, flat, data_mode)
+render_activity_log()
 with overview_slot:
     render_overview(data, limits)
 

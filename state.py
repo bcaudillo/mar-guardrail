@@ -22,6 +22,60 @@ ERROR = "error"  # broken — and we say exactly why
 SKIP = "skip"    # not checked in this mode (e.g. DB checks in demo mode)
 
 
+# ---------------------------------------------------------------------------
+# ACTIVITY LOG
+#
+# A structured, append-only record of what the guardrail *did*: each connector
+# it checked, every alert it raised, every trigger that fired or failed. This is
+# the core "what happened" feed — distinct from snapshot()'s "what is true right
+# now". main.py and triggers.py write to it; the demo UI renders it.
+#
+# It lives here (module-level) rather than in the UI so it's a real concept any
+# caller can use, and so a guardrail pass populates the same log the UI shows
+# when they run in one process. Bounded so a long-lived process can't grow it
+# without limit.
+# ---------------------------------------------------------------------------
+from collections import deque  # noqa: E402 — kept beside the buffer it powers
+
+# Activity levels, ordered roughly by severity. The UI maps these to icons.
+INFO = "info"      # routine: a connector checked out ok
+ACTION = "action"  # the guardrail took an action (an alert was sent, a pause)
+ALERT = "alert"    # a connector is over its limit
+LOG_WARN = "warn"  # something skipped (e.g. no MAR yet)
+LOG_ERROR = "error"  # an action failed (send error, pause failed)
+
+_MAX_EVENTS = 500
+_activity = deque(maxlen=_MAX_EVENTS)
+
+
+def log_event(message, level=INFO, source="guardrail"):
+    """Append one structured event to the activity log (and return it).
+
+    message: human-readable line, e.g. "salesforce_prod: 1,200,000 / 1,000,000 MAR — OVER LIMIT"
+    level:   one of INFO / ACTION / ALERT / LOG_WARN / LOG_ERROR
+    source:  who logged it, e.g. "check", "pause", "slack", "run"
+    """
+    event = {
+        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "level": level,
+        "source": source,
+        "message": message,
+    }
+    _activity.append(event)
+    return event
+
+
+def activity_log(newest_first=True):
+    """Return the recorded events as a list (a copy, safe to iterate/mutate)."""
+    events = list(_activity)
+    return list(reversed(events)) if newest_first else events
+
+
+def clear_activity_log():
+    """Drop all recorded events. The UI's 'Clear' button calls this."""
+    _activity.clear()
+
+
 def snapshot(data_mode="live"):
     """Return a structured report of current system state.
 

@@ -26,12 +26,20 @@ import requests
 from fivetran_api import pause_connector
 
 
-def _log(message):
-    """Print one timestamped line. Every trigger calls this so the console (and
-    anything capturing stdout, like cron mail or a log file) shows exactly what
-    fired and when."""
+def _log(message, level="info", source="trigger"):
+    """Print one timestamped line AND record it to the structured activity log.
+
+    The print keeps console/cron-mail/log-file behavior exactly as before; the
+    activity-log entry is what the demo UI (and any embedder) renders as a feed.
+    The activity log is imported lazily and guarded so triggers still work
+    standalone even if state.py is unavailable."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
+    try:
+        from state import log_event
+        log_event(message, level=level, source=source)
+    except Exception:  # noqa: BLE001 — logging must never break a trigger
+        pass
 
 
 def _build_message(connection_name, current_mar, limit):
@@ -51,7 +59,11 @@ def trigger_pause(connection_name, current_mar, limit):
     the Fivetran dashboard (or by editing fivetran_api.py)."""
     ok = pause_connector(connection_name)
     status = "paused connector" if ok else "PAUSE FAILED (see message above)"
-    _log(f"[pause] {status} — {_build_message(connection_name, current_mar, limit)}")
+    _log(
+        f"[pause] {status} — {_build_message(connection_name, current_mar, limit)}",
+        level="action" if ok else "error",
+        source="pause",
+    )
 
 
 def trigger_slack(connection_name, current_mar, limit, webhook_url):
@@ -62,10 +74,10 @@ def trigger_slack(connection_name, current_mar, limit, webhook_url):
     try:
         resp = requests.post(webhook_url, json=payload, timeout=15)
         resp.raise_for_status()
-        _log(f"[slack] alert sent for '{connection_name}'.")
+        _log(f"[slack] alert sent for '{connection_name}'.", level="action", source="slack")
     except requests.exceptions.RequestException as exc:
         # Caught so one bad webhook can't stop the other connectors' checks.
-        _log(f"[slack] FAILED to alert for '{connection_name}': {exc}")
+        _log(f"[slack] FAILED to alert for '{connection_name}': {exc}", level="error", source="slack")
 
 
 def trigger_email(connection_name, current_mar, limit, smtp_config):
@@ -85,10 +97,10 @@ def trigger_email(connection_name, current_mar, limit, smtp_config):
             server.sendmail(
                 smtp_config["from_addr"], smtp_config["to_addrs"], msg.as_string()
             )
-        _log(f"[email] alert sent for '{connection_name}' to {msg['To']}.")
+        _log(f"[email] alert sent for '{connection_name}' to {msg['To']}.", level="action", source="email")
     except (smtplib.SMTPException, OSError) as exc:
         # OSError covers connection/timeout problems; both are logged, not raised.
-        _log(f"[email] FAILED to alert for '{connection_name}': {exc}")
+        _log(f"[email] FAILED to alert for '{connection_name}': {exc}", level="error", source="email")
 
 
 def trigger_webhook(connection_name, current_mar, limit, url, auth_header):
@@ -105,6 +117,6 @@ def trigger_webhook(connection_name, current_mar, limit, url, auth_header):
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=15)
         resp.raise_for_status()
-        _log(f"[webhook] alert POSTed for '{connection_name}' to {url}.")
+        _log(f"[webhook] alert POSTed for '{connection_name}' to {url}.", level="action", source="webhook")
     except requests.exceptions.RequestException as exc:
-        _log(f"[webhook] FAILED to alert for '{connection_name}': {exc}")
+        _log(f"[webhook] FAILED to alert for '{connection_name}': {exc}", level="error", source="webhook")

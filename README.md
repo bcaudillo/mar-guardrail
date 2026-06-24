@@ -144,6 +144,12 @@ streamlit run app.py
 - **Connectors** are grouped by schema, multi-select, and scroll vertically
   (~10 rows). Each selected connector takes an **integer** MAR limit (no
   percentages, no cost math) and shows a live OVER/OK status.
+- **Run guardrail check** evaluates the selected connectors against their limits
+  using the *same* `main.evaluate()` logic the CLI uses, and records each result
+  to the **activity log** — a timestamped feed of what the guardrail did (checks,
+  over-limit alerts, and the alert channels it fired). Alert dispatch in the demo
+  is **simulated** (logged, never actually sent) so it's safe to click. Real
+  `main.py` runs in the same process feed the same log.
 - The demo's selections and limits are independent UI state; it never writes
   back to `config.py`.
 
