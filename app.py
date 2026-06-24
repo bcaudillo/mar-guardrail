@@ -28,6 +28,8 @@ DEMO_MAR = {
 }
 
 DEFAULT_LIMIT = 1_000_000
+# At/above this fraction of the limit a connector is flagged NEAR (not yet over).
+NEAR_THRESHOLD = 0.8
 # ~10 rows visible, then the connector list scrolls vertically (never sideways).
 SCROLL_HEIGHT_PX = 340
 
@@ -74,12 +76,17 @@ def flatten(data):
 def render_overview(data, limits):
     flat = flatten(data)
     total_mar = sum(flat.values())
-    over = sum(1 for conn, mar in flat.items() if conn in limits and mar > limits[conn])
+    over = sum(1 for conn, mar in flat.items()
+               if conn in limits and limits[conn] and mar > limits[conn])
+    near = sum(1 for conn, mar in flat.items()
+               if conn in limits and limits[conn]
+               and NEAR_THRESHOLD <= mar / limits[conn] <= 1.0)
     with st.container(border=True):
-        a, b, c = st.columns(3)
+        a, b, c, d = st.columns(4)
         a.metric("Connectors", len(flat))
         b.metric("Total MAR", f"{total_mar:,}")
         c.metric("Over limit", over)
+        d.metric(f"Near (≥{int(NEAR_THRESHOLD * 100)}%)", near)
 
 
 def render_connectors(data):
@@ -103,24 +110,40 @@ def render_connectors(data):
 
 
 def render_limits(selected, flat):
-    """One integer MAR limit per selected connector, with live OVER/OK status.
-    Integer limits only — no percentages, no cost math."""
+    """One integer MAR limit per selected connector, shown ALONGSIDE that
+    connector's current MAR so the status has a reference: you see this month's
+    MAR, the limit you set, how far through it you are, and OVER/NEAR/OK."""
     st.subheader("Limits")
     limits = {}
     if not selected:
         st.caption("Select one or more connectors above to set integer MAR limits.")
         return limits
-    with st.container(border=True):
-        for conn in selected:
-            row = st.columns([3, 1])
-            limits[conn] = row[0].number_input(
-                f"{conn} — monthly MAR limit",
-                min_value=1, step=1, value=DEFAULT_LIMIT, key=f"lim_{conn}",
-            )
-            mar = flat.get(conn, 0)
-            row[1].markdown(
-                "**:red[OVER]**" if mar > limits[conn] else "**:green[OK]**"
-            )
+    for conn in selected:
+        mar = flat.get(conn, 0)
+        with st.container(border=True):
+            left, right = st.columns([3, 2])
+            with left:
+                limit = st.number_input(
+                    f"{conn} — monthly MAR limit",
+                    min_value=1, step=1, value=DEFAULT_LIMIT, key=f"lim_{conn}",
+                )
+                limits[conn] = limit
+            pct = mar / limit if limit else 0.0
+            with right:
+                # Current MAR is the reference; the delta is the overage/headroom
+                # vs the limit (inverse coloring: over = red, under = green).
+                st.metric(
+                    "MAR this month", f"{mar:,}",
+                    delta=f"{mar - limit:+,} vs limit", delta_color="inverse",
+                )
+            st.progress(min(pct, 1.0))
+            if mar > limit:
+                status = f":red[**OVER** by {mar - limit:,}]"
+            elif pct >= NEAR_THRESHOLD:
+                status = f":orange[**NEAR** — {limit - mar:,} headroom]"
+            else:
+                status = f":green[**OK** — {limit - mar:,} headroom]"
+            st.caption(f"{pct * 100:.0f}% of limit  ·  {status}")
     return limits
 
 
