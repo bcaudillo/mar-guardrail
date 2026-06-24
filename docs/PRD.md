@@ -1,6 +1,6 @@
 # MAR Guardrail — Product Requirements Document
 
-> **Status:** Draft v0.2 · **Owner:** @bcaudillo · **Last updated:** 2026-06-24
+> **Status:** Draft v0.3 · **Owner:** @bcaudillo · **Last updated:** 2026-06-24
 > **Type:** Living document. Sections marked **[OPEN]** are unresolved product
 > decisions; sections marked **[VERIFIED]** reflect what the codebase already
 > does today. This is a framework — fill, cut, and argue with it.
@@ -151,6 +151,53 @@ The product's reason to exist, mapped to what already works:
    activity log. → `state.log_event()` **[VERIFIED, but in-memory only — see OPEN-2]**
 4. **Surface** — show all of the above in one UI with a debug/observability
    panel. → `app.py`, `state.snapshot()` **[VERIFIED, partial]**
+
+### 5.3 Worked example
+
+**Setup.** Connector `salesforce_prod` has a monthly PAID MAR limit of
+**2,000,000**. It normally ingests **~40,000 rows/day**. On the 18th of the
+month, a new field is added upstream and Fivetran re-syncs the object — that
+day's load lands **620,000 rows**.
+
+**1. Data** — the Platform Connector syncs this into `incremental_mar`:
+
+```
+measured_date | connection_name | free_type | incremental_rows
+2026-06-16    | salesforce_prod | PAID      |     38,500
+2026-06-17    | salesforce_prod | PAID      |     41,200
+2026-06-18    | salesforce_prod | PAID      |    620,000   <- spike
+```
+
+**2. Detect** — on the next guardrail pass, two signals run over that table:
+
+- **Budget / threshold:** month-to-date = **1,300,000 / 2,000,000 = 65%** →
+  classified **OK**. *A static limit alone stays silent here.* **[VERIFIED]**
+- **Anomaly:** day-18's 620,000 vs the trailing-14-day baseline (mean ≈ 40,000)
+  is **~15x normal** → **flagged the same day**. **[OPEN-8]**
+
+**3. Act** — through the **Fivetran REST API**:
+
+- Default posture *(recommended in OPEN-5 / OPEN-8)*: anomaly is **alert-only**
+  → a Slack/email goes out; nothing is paused.
+- If `salesforce_prod` had **anomaly → pause** armed: `PATCH /connections/{id}`
+  with `{"paused": true}`. **[VERIFIED capability]**
+- **Backstop:** if MAR later crosses 2,000,000, the **threshold** trips OVER and
+  pause fires regardless of the anomaly path. **[VERIFIED]**
+
+**4. Record** — every step appends to the activity log (durable sink **[OPEN-2]**):
+
+```
+2026-06-18 04:12:07 [check]   salesforce_prod: 1,300,000 / 2,000,000 MAR — ok (65%)
+2026-06-18 04:12:07 [anomaly] salesforce_prod: 620,000 today vs ~40,000 baseline (15.5x) — ANOMALY
+2026-06-18 04:12:08 [slack]   anomaly alert sent for 'salesforce_prod'
+```
+
+**Why this is the whole point.** The static limit would have reported "65% —
+fine," and you'd have discovered the problem at month-end on the invoice.
+Because the Platform Connector gives daily history, anomaly detection caught it
+on the **18th** — almost two weeks of runaway syncs earlier — and the action
+went out over the REST API. Threshold = the hard backstop; anomaly = the early
+warning.
 
 ---
 
