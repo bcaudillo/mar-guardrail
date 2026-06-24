@@ -1,6 +1,6 @@
 # MAR Guardrail — Product Requirements Document
 
-> **Status:** Draft v0.1 · **Owner:** @bcaudillo · **Last updated:** 2026-06-24
+> **Status:** Draft v0.2 · **Owner:** @bcaudillo · **Last updated:** 2026-06-24
 > **Type:** Living document. Sections marked **[OPEN]** are unresolved product
 > decisions; sections marked **[VERIFIED]** reflect what the codebase already
 > does today. This is a framework — fill, cut, and argue with it.
@@ -20,10 +20,13 @@
 ## 1. Summary
 
 MAR Guardrail watches per-connector **Monthly Active Rows (MAR)** — the metric
-Fivetran bills on — and acts before a connector runs past its budget. The core
-loop is small and already exists: read current-month PAID MAR → compare against
-a per-connector limit → fire actions (alert and/or pause the connector) → record
-what happened.
+Fivetran bills on — and acts before a connector runs past its budget. It works
+by reading the MAR history that the **Fivetran Platform Connector** lands in your
+own warehouse, which lets it do both **budget enforcement** (vs a limit) and
+**anomaly detection** (spotting abnormal spikes early). The core loop is small
+and already exists: read current-month PAID MAR → compare against a per-connector
+limit (and its baseline) → fire actions (alert and/or pause the connector) →
+record what happened.
 
 This PRD covers the next stage: a **single cohesive product** that merges the
 visual clarity of the dashboard prototype, the at-a-glance automation of the
@@ -42,7 +45,12 @@ one end goal:
 - MAR is **billed per calendar month** and accrues daily; there is no hard cap
   in Fivetran itself, so overruns are a budgeting/ops problem, not a platform
   one.
-- Teams need (a) **visibility** into where MAR is going this month, and (b) an
+- The dangerous failures are often **anomalies**, not gradual drift: a schema
+  change re-ingests a whole table, a misconfigured sync loops, a backfill runs
+  away. A static monthly limit only catches these *after* they've accumulated;
+  the daily history from the Platform Connector lets us catch the spike early.
+- Teams need (a) **visibility** into where MAR is going this month, (b)
+  **early warning** when a connector behaves abnormally, and (c) an
   **automatic backstop** that pauses or alerts before a connector blows its
   budget — without babysitting a dashboard.
 
@@ -80,12 +88,42 @@ one end goal:
 
 ---
 
-## 5. End-to-end story (the spine)
+## 5. How it works
+
+### 5.1 The mechanism — the Fivetran Platform Connector
+
+Fivetran doesn't expose MAR through a convenient real-time meter. Instead it
+offers the **Platform Connector** (a.k.a. the Fivetran log / metadata connector):
+a first-party connector that syncs your *account's own operational metadata* —
+MAR, connector status, sync logs, usage — into your destination, exactly like
+any other source. Once it's running, your MAR history lives in your own
+warehouse as queryable tables.
+
+This is the linchpin of the whole product. Because the Platform Connector lands
+**`incremental_mar`** (daily `incremental_rows` per connection, tagged
+PAID / FREE / SYSTEM) into the destination, MAR becomes **queryable and
+historical** instead of being locked inside Fivetran's billing UI. Everything
+downstream — budgets, trends, and anomaly detection — is just SQL over that
+table.
+
+**Why this enables anomaly detection.** Because we get *daily, per-connection*
+MAR with history, we are not limited to a static monthly ceiling. We can learn
+each connector's normal pattern and flag when a day's MAR deviates from it — a
+spike that signals a runaway sync, a schema change re-ingesting everything, or a
+sync loop — and catch it **early, mid-month**, before it accumulates into a
+budget breach. The Platform Connector is what makes that baseline possible; a
+static limit alone can't see a spike coming.
+
+### 5.2 The loop (the spine)
 
 The product's reason to exist, mapped to what already works:
 
-1. **Detect** — sum current-month PAID `incremental_mar` per connection;
-   compare to its limit. → `query.get_current_mar()`, `main.evaluate()` **[VERIFIED]**
+1. **Detect** — two complementary signals over `incremental_mar`:
+   - **Budget / threshold** — cumulative current-month PAID MAR vs the
+     connector's limit (OK / NEAR / OVER). → `query.get_current_mar()`,
+     `main.evaluate()` **[VERIFIED]**
+   - **Anomaly** — a day's MAR deviating from the connector's recent baseline,
+     independent of the monthly cap (early warning). **[OPEN — see OPEN-8]**
 2. **Act** — fire the connector's configured triggers in order. The hard stop is
    pause. → `triggers.py`, `fivetran_api.pause_connector()` **[VERIFIED]**
 3. **Record** — append a structured event (who, what, when, outcome) to the
@@ -130,6 +168,9 @@ Two sources with very different properties.
 - FR2. Compare each watched connector to its integer `mar_limit`; classify
   OK / NEAR (≥ threshold) / OVER. **[VERIFIED]** (NEAR threshold = 80% **[OPEN-4]**)
 - FR3. Surface daily trend + run-rate projection per connector. **[AVAILABLE]**
+- FR3a. **Anomaly detection** — flag a connector whose daily MAR deviates
+  significantly from its own recent baseline, independent of the monthly limit.
+  Signal, sensitivity, and action mapping are **[OPEN-8]**.
 
 ### 7.2 Actions / triggers
 - FR4. On OVER, fire the connector's triggers in configured order:
@@ -199,6 +240,12 @@ current debug panel**:
   styling do we keep vs. native-minimal?
 - **[OPEN-7] Scheduling.** Out of scope (cron/Airflow is the user's), or do we
   ship a recommended runner?
+- **[OPEN-8] Detection model.** Threshold-only, anomaly-only, or both? If
+  anomaly: what's the signal (e.g. daily `incremental_rows` vs trailing N-day
+  mean/σ, a % jump over baseline, or a more involved seasonal model), how
+  sensitive, and how do anomalies map to actions (alert-only vs eligible for
+  pause)? *(Rec: keep the budget threshold as the hard guardrail; add anomaly
+  detection as an early-warning that alerts but does not auto-pause initially.)*
 
 ---
 
