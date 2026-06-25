@@ -73,6 +73,26 @@ one end goal:
 - N3. We are not a general Fivetran admin tool (no resync, schema editing, etc.).
 - N4. We do not write back to `config.py` from the UI; config stays the source
   of truth for unattended runs. **[VERIFIED]**
+- N5. **We do not compute or display dollar cost. MAR is the unit.** Cost is MAR
+  run through a *tiered* pricing curve, and annual commitments carry
+  *discounted/negotiated* rates that differ per customer and plan — any dollar
+  figure we showed would be wrong for someone, and a wrong cost number is worse
+  than none. The guardrail enforces a **MAR limit** (the lever we can measure
+  exactly); customers translate MAR ↔ cost with **Fivetran's pricing
+  estimator** against their own plan. We keep them *cost-aware* by making the
+  MAR limit the explicit budget and linking to that estimator — not by doing the
+  dollar math ourselves. **[VERIFIED — integer MAR limits, no cost math]**
+
+### How MAR is calculated (and why summing is correct)
+
+MAR is **distinct active rows per calendar month** — a row active on several days
+counts **once**, not once per day. Fivetran's `incremental_mar` table is built for
+this: `incremental_rows` is the count of *newly*-active rows each day, so
+**summing it across the month yields MAR with no double-counting** (summing a
+"total rows" column instead would over-count badly). We sum **PAID** rows only.
+Daily anomaly detection reads the same incremental series. This is a deliberate,
+load-bearing detail — "fixing" the sum into a distinct-count over totals would be
+wrong. **[VERIFIED — query.get_current_mar / get_daily_mar]**
 
 ---
 

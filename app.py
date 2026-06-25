@@ -325,6 +325,11 @@ def render_settings(data_mode):
             help="For connectors without a config.py limit or an inline edit.")
         channels = b.multiselect("Alert channels for over-limit connectors",
                                  ALERT_CHANNELS, default=["slack"])
+        st.caption(
+            "Limits are in **MAR**, not dollars. Pricing is tiered and annual "
+            "commitments are discounted, so cost is specific to your plan — use "
+            "[Fivetran's pricing estimator](https://www.fivetran.com/pricing) to "
+            "decide what MAR level you want and what it costs you.")
         st.caption("Anomaly detection sensitivity (OPEN-8)")
         k1, k2, k3 = st.columns(3)
         window = k1.slider("Baseline window (days)", 3, 21, 14)
