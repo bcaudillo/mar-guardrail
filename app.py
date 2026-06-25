@@ -1,19 +1,18 @@
 # app.py
 #
-# The operator console for the mar-guardrail framework. It runs on your REAL
-# data (the current-month PAID MAR the Platform Connector lands in your
-# warehouse) and is built to scale: it surfaces the handful of connectors that
-# need attention rather than making you scroll hundreds.
+# The operator console for the mar-guardrail framework.
+#
+# It is INVENTORY-FIRST: it starts from "here are all the connectors you have"
+# (the roster Fivetran reports via the REST API), then hangs MAR and limits off
+# each one and lets you turn connectors on/off (pause/resume). MAR comes from the
+# Platform Connector's data in your warehouse; the roster and the on/off switches
+# come from the Fivetran REST API. (See the PRD's "two surfaces" — read vs act.)
 #
 # Run with:  streamlit run app.py
 #
-# It is not required to run the guardrail (main.py is) — but unlike a toy demo,
-# it reads live data through the same core modules (config.py, query.py,
-# fivetran_api.py, triggers.py, state.py) and can fire the same real actions, so
-# what you see here is what the unattended run does.
-#
-# For a self-contained teaching demo (anomaly detection on generated data) see
-# examples/anomaly_demo.py.
+# Built to scale: it surfaces the connectors that need attention first rather
+# than making you scroll hundreds. For a self-contained teaching demo of anomaly
+# detection see examples/anomaly_demo.py.
 
 import io
 from contextlib import redirect_stderr, redirect_stdout
@@ -24,20 +23,28 @@ import streamlit as st
 import config
 import state as state_mod
 
-# Bundled sample data for the Demo toggle — {schema: {connection: paid_mar}},
-# the exact shape the live query returns, so the UI renders identically.
+# --- Sample data for the Demo toggle ----------------------------------------
+# A connector ROSTER (what Fivetran would report), incl. paused ones and one
+# with no MAR — so Demo mode shows the inventory-first behavior end to end.
+DEMO_CONNECTORS = [
+    {"name": "salesforce_prod", "service": "salesforce", "paused": False},
+    {"name": "salesforce_sandbox", "service": "salesforce", "paused": True},
+    {"name": "postgres_analytics", "service": "postgres", "paused": False},
+    {"name": "postgres_billing", "service": "postgres", "paused": False},
+    {"name": "hubspot_marketing", "service": "hubspot", "paused": False},
+    {"name": "stripe_payments", "service": "stripe", "paused": True},
+    {"name": "netsuite_finance", "service": "netsuite", "paused": False},
+    {"name": "zendesk_support", "service": "zendesk", "paused": False},  # no MAR
+]
 DEMO_MAR = {
-    "salesforce": {"salesforce_prod": 1_250_000, "salesforce_sandbox": 90_000},
-    "postgres": {"postgres_analytics": 420_000, "postgres_billing": 510_000},
-    "marketing": {"hubspot_marketing": 240_000, "stripe_payments": 75_000},
-    "finance": {"netsuite_finance": 980_000},
+    "salesforce_prod": 1_250_000, "salesforce_sandbox": 90_000,
+    "postgres_analytics": 420_000, "postgres_billing": 510_000,
+    "hubspot_marketing": 240_000, "stripe_payments": 75_000,
+    "netsuite_finance": 980_000,
 }
 
-# Default monthly MAR limit applied to any connector that doesn't have an
-# explicit limit in config.py. (config.py stays the source of truth for the
-# unattended run; this default just lets the console show a status for the rest.)
 DEFAULT_LIMIT = 1_000_000
-NEAR_THRESHOLD = 0.8  # at/above this fraction of the limit -> NEAR (not yet OVER)
+NEAR_THRESHOLD = 0.8
 
 STATUS_ICON = {state_mod.OK: "✅", state_mod.WARN: "⚠️",
                state_mod.ERROR: "❌", state_mod.SKIP: "➖"}
@@ -49,75 +56,91 @@ ALERT_CHANNELS = ["pause", "slack", "email", "webhook"]
 # ---------------------------------------------------------------------------
 # DATA
 # ---------------------------------------------------------------------------
-def load_live(free_types, all_time):
-    """Read grouped live MAR, capturing console output and any failure reason.
-    Returns (data, error, console_text) — error is the exact exception text."""
-    from query import get_mar_by_schema  # lazy import so Demo mode needs no DB
+def load_mar_live(free_types, all_time):
+    """Read current-month MAR keyed by connection_name, capturing console output
+    and any failure reason. Returns (mar_by_conn, error, console_text)."""
+    from query import get_mar_by_schema  # lazy: Demo mode needs no DB
 
     buf = io.StringIO()
-    data, error = {}, None
+    mar, error = {}, None
     try:
         with redirect_stdout(buf), redirect_stderr(buf):
-            data = get_mar_by_schema(free_types=free_types, all_time=all_time)
-    except Exception as exc:  # noqa: BLE001 — report any driver/connection error verbatim
+            grouped = get_mar_by_schema(free_types=free_types, all_time=all_time)
+        mar = {conn: v for inst in grouped.values() for conn, v in inst.items()}
+    except Exception as exc:  # noqa: BLE001 — surface the exact reason
         error = f"{type(exc).__name__}: {exc}"
-    return data, error, buf.getvalue()
+    return mar, error, buf.getvalue()
 
 
-def flatten(data):
-    """{schema: {conn: mar}} -> {conn: mar}."""
-    return {conn: mar for instances in data.values() for conn, mar in instances.items()}
+def load_roster_live():
+    """The connector inventory from the Fivetran REST API. Returns
+    (roster_list_or_None, error). None means we couldn't list them (no creds /
+    API error) — the dashboard then falls back to MAR-derived names."""
+    from fivetran_api import check_api, list_connections  # lazy
+
+    api = check_api()
+    if not api["configured"]:
+        return None, "Fivetran API not configured — add FIVETRAN_API_KEY/SECRET to list all connectors and toggle them."
+    if not api["ok"]:
+        return None, api["error"]
+    try:
+        return list_connections(), None
+    except Exception as exc:  # noqa: BLE001
+        return None, f"{type(exc).__name__}: {exc}"
 
 
-def resolve_limits(data, default_limit):
-    """Per-connector limit: from config.py where defined, else the UI default.
-    This mirrors how the unattended run treats limits, so the console is honest."""
+def resolve_limits(names, default_limit):
+    """Per-connector limit from config.py where defined, else the UI default."""
     configured = {c["connection_name"]: c["mar_limit"] for c in config.CONNECTORS}
-    return {conn: configured.get(conn, default_limit) for conn in flatten(data)}
+    return {n: configured.get(n, default_limit) for n in names}
 
 
-def build_rows(data, limits):
-    """One scored row per connector. `risk` floats exceptions to the top."""
+def build_rows(roster, mar_by_conn, limits):
+    """Join roster + MAR + limit into one scored row per connector. `paused` may
+    be None when the roster is unknown (no API). `risk` floats exceptions up."""
     rows = []
-    for schema, conns in data.items():
-        for conn, mar in conns.items():
-            limit = limits.get(conn, 0)
-            pct = mar / limit if limit else 0.0
-            status = "OVER" if mar > limit else ("NEAR" if pct >= NEAR_THRESHOLD else "OK")
-            configured = any(c["connection_name"] == conn for c in config.CONNECTORS)
-            risk = (1_000 if status == "OVER" else 0) + pct * 100
-            rows.append({
-                "connector": conn, "schema": schema, "mar": mar, "limit": limit,
-                "pct": pct, "status": status, "configured": configured, "risk": risk,
-            })
+    for c in roster:
+        name = c["name"]
+        mar = mar_by_conn.get(name, 0)
+        limit = limits.get(name, 0)
+        pct = mar / limit if limit else 0.0
+        status = "OVER" if mar > limit else ("NEAR" if pct >= NEAR_THRESHOLD else "OK")
+        risk = (1_000 if status == "OVER" else 0) + pct * 100
+        rows.append({
+            "connector": name, "service": c.get("service") or "—",
+            "mar": mar, "limit": limit, "pct": pct, "status": status,
+            "paused": c.get("paused"), "risk": risk,
+        })
     return rows
 
 
 # ---------------------------------------------------------------------------
 # COMPONENTS
 # ---------------------------------------------------------------------------
-def render_overview(rows):
+def render_overview(rows, on_off_known):
     total = sum(r["mar"] for r in rows)
     over = sum(1 for r in rows if r["status"] == "OVER")
-    near = sum(1 for r in rows if r["status"] == "NEAR")
+    paused = sum(1 for r in rows if r["paused"]) if on_off_known else None
     with st.container(border=True):
         a, b, c, d = st.columns(4)
         a.metric("Connectors", f"{len(rows):,}")
         b.metric("Total MAR", f"{total:,}")
         c.metric("Over limit", over)
-        d.metric(f"Near (≥{int(NEAR_THRESHOLD * 100)}%)", near)
+        d.metric("Paused", paused if paused is not None else "—")
 
 
-def render_table(rows):
-    """Exception-focused, sortable/filterable table. Scales from 5 to 500
-    connectors: you see the at-risk ones first, not a wall of checkboxes."""
-    st.subheader("Connectors — most at risk first")
+def render_inventory(rows, on_off_known):
+    """The inventory table. When the roster is known, the Active column is an
+    editable on/off switch; returns the list of (name, new_paused) toggles the
+    user made (applied by the caller)."""
+    st.subheader("Connectors — your Fivetran inventory")
     df = pd.DataFrame(rows)
 
-    f1, f2, f3 = st.columns([1.3, 1.6, 2])
-    view = f1.radio("Show", ["Exceptions", "Over", "Near", "All"], horizontal=True)
-    schemas = sorted(df["schema"].unique())
-    chosen = f2.multiselect("Schema", schemas, default=schemas)
+    f1, f2, f3 = st.columns([1.4, 1.6, 2])
+    views = ["All", "Exceptions", "Over"] + (["Paused"] if on_off_known else [])
+    view = f1.radio("Show", views, horizontal=True)
+    services = sorted(df["service"].unique())
+    chosen = f2.multiselect("Service", services, default=services)
     search = f3.text_input("Search connector", "")
 
     shown = df.copy()
@@ -125,57 +148,92 @@ def render_table(rows):
         shown = shown[shown["status"].isin(["OVER", "NEAR"])]
     elif view == "Over":
         shown = shown[shown["status"] == "OVER"]
-    elif view == "Near":
-        shown = shown[shown["status"] == "NEAR"]
-    shown = shown[shown["schema"].isin(chosen)]
+    elif view == "Paused":
+        shown = shown[shown["paused"] == True]  # noqa: E712 — pandas mask
+    shown = shown[shown["service"].isin(chosen)]
     if search:
         shown = shown[shown["connector"].str.contains(search, case=False)]
     shown = shown.sort_values("risk", ascending=False)
+    st.caption(f"Showing {len(shown):,} of {len(df):,} connectors.")
 
-    disp = pd.DataFrame({
+    base = {
         "Connector": shown["connector"],
-        "Schema": shown["schema"],
+        "Service": shown["service"],
         "Status": [{"OVER": "🔴 OVER", "NEAR": "🟠 NEAR", "OK": "🟢 OK"}[s]
                    for s in shown["status"]],
         "MAR this month": shown["mar"],
         "% of limit": (shown["pct"] * 100).round(0),
         "Limit": shown["limit"],
-    })
-    st.caption(f"Showing {len(disp):,} of {len(df):,} connectors.")
-    st.dataframe(
-        disp, use_container_width=True, hide_index=True, height=360,
-        column_config={
-            "MAR this month": st.column_config.NumberColumn(format="%d"),
-            "Limit": st.column_config.NumberColumn(format="%d"),
-            "% of limit": st.column_config.ProgressColumn(
-                format="%d%%", min_value=0, max_value=150),
-        },
+    }
+    col_cfg = {
+        "MAR this month": st.column_config.NumberColumn(format="%d"),
+        "Limit": st.column_config.NumberColumn(format="%d"),
+        "% of limit": st.column_config.ProgressColumn(
+            format="%d%%", min_value=0, max_value=150),
+    }
+
+    if not on_off_known:
+        st.dataframe(pd.DataFrame(base), use_container_width=True,
+                     hide_index=True, height=360, column_config=col_cfg)
+        return []
+
+    # Roster known -> editable on/off (Active = not paused) as the first column.
+    disp = pd.DataFrame({"Active": [not p for p in shown["paused"]], **base})
+    col_cfg["Active"] = st.column_config.CheckboxColumn(
+        "Active", help="On = running, off = paused. Edit, then Apply below.")
+    edited = st.data_editor(
+        disp, key="inv_editor", hide_index=True, use_container_width=True, height=360,
+        disabled=["Connector", "Service", "Status", "MAR this month", "% of limit", "Limit"],
+        column_config=col_cfg,
     )
+    current = {r["connector"]: r["paused"] for r in rows}
+    changes = [(name, not active) for name, active in zip(edited["Connector"], edited["Active"])
+               if current.get(name) != (not active)]
+    return changes
 
 
-def run_pass(data, limits, channels, really_send, data_mode):
-    """Evaluate EVERY connector (one pass) and act on the exceptions only —
-    O(exceptions), not O(fleet). Reuses main.evaluate(), the same decision logic
-    the unattended CLI uses, so the activity log matches a real run."""
-    import main  # lazy: pulls in triggers/requests only when a pass runs
+def apply_onoff(changes, really_apply, data_mode):
+    """Apply on/off toggles. Demo updates session state (simulated). Live either
+    really calls the REST API (when armed) or logs a simulated intent."""
+    for name, new_paused in changes:
+        verb = "pause" if new_paused else "resume"
+        target = "paused" if new_paused else "active"
+        if data_mode == "demo":
+            paused_set = st.session_state["demo_paused"]
+            (paused_set.add if new_paused else paused_set.discard)(name)
+            state_mod.log_event(f"[{verb}] {name} → {target} (demo)",
+                                level=state_mod.ACTION, source=verb)
+        elif really_apply:
+            from fivetran_api import set_paused  # lazy
+            ok = set_paused(name, new_paused)
+            state_mod.log_event(
+                f"[{verb}] {name} → {target} via REST API ({'ok' if ok else 'FAILED'})",
+                level=state_mod.ACTION if ok else state_mod.LOG_ERROR, source=verb)
+        else:
+            state_mod.log_event(
+                f"[{verb}] {name} → {target} (simulated — tick 'Actually apply' to send)",
+                level=state_mod.ACTION, source=verb)
 
-    REAL_DISPATCH = {"slack", "email", "webhook"}  # pause is always simulated here
-    flat = flatten(data)
-    connectors = [{"connection_name": c, "mar_limit": int(limits[c]), "triggers": channels}
-                  for c in flat]
 
+def run_pass(rows, limits, channels, really_send, data_mode):
+    """Evaluate every connector and alert on the over-limit ones (acts on
+    exceptions only). Reuses main.evaluate() — the same logic the CLI uses."""
+    import main  # lazy
+
+    REAL_DISPATCH = {"slack", "email", "webhook"}  # pause stays simulated here
+    mar_by_conn = {r["connector"]: r["mar"] for r in rows}
+    connectors = [{"connection_name": r["connector"], "mar_limit": int(limits[r["connector"]]),
+                   "triggers": channels} for r in rows]
     state_mod.log_event(
         f"Guardrail pass ({data_mode}) — {len(connectors):,} connector(s)"
         + (" — LIVE dispatch" if really_send else ""),
         level=state_mod.INFO, source="run")
 
-    results = main.evaluate(connectors, flat)
+    results = main.evaluate(connectors, mar_by_conn)
     over = [r for r in results if r["over"]]
     for r in over:
         name = r["connection_name"]
         if not channels:
-            state_mod.log_event(f"{name} is over limit but no alert channels selected",
-                                level=state_mod.LOG_WARN, source="run")
             continue
         connector = {"connection_name": name, "mar_limit": int(limits[name])}
         for channel in channels:
@@ -186,40 +244,16 @@ def run_pass(data, limits, channels, really_send, data_mode):
                         else "demo — not actually dispatched")
                 state_mod.log_event(f"[{channel}] alert for '{name}' ({note})",
                                     level=state_mod.ACTION, source=channel)
-
     state_mod.log_event(
         f"Pass complete — acted on {len(over)} over-limit of {len(results):,} checked",
         level=state_mod.ALERT if over else state_mod.INFO, source="run")
-
-
-def render_run_controls(data, limits, data_mode):
-    st.subheader("Run")
-    with st.container(border=True):
-        channels = st.multiselect(
-            "Alert channels to fire for over-limit connectors",
-            ALERT_CHANNELS, default=["slack"])
-        really_send = st.checkbox(
-            "Actually send Slack / Email / Webhook alerts", key="really_send", value=False,
-            help="On: those three channels really send using your config.py settings. "
-                 "Off: everything is simulated. Pause is always simulated here.")
-        if really_send:
-            st.caption(":red[Live dispatch — Slack/Email/Webhook alerts will really "
-                       "be sent using your configured channels.]")
-        run_col, clear_col = st.columns(2)
-        if run_col.button("Run guardrail pass", key="run_btn", type="primary",
-                          use_container_width=True, disabled=not data):
-            run_pass(data, limits, channels, really_send, data_mode)
-        if clear_col.button("Clear log", key="clear_btn", use_container_width=True):
-            state_mod.clear_activity_log()
-            st.rerun()
 
 
 def render_activity_log():
     st.subheader("Activity log")
     events = state_mod.activity_log(newest_first=True)
     if not events:
-        st.caption("No activity yet — **Run guardrail pass**. Real `main.py` runs in "
-                   "the same process appear here too.")
+        st.caption("No activity yet — toggle connectors on/off, or **Run guardrail pass**.")
         return
     with st.container(height=300, border=True):
         for ev in events:
@@ -247,31 +281,32 @@ def render_debug_panel(data_mode, console_text, load_error):
 st.set_page_config(page_title="MAR Guardrail", layout="wide")
 
 st.session_state.setdefault("debug_open", False)
-st.session_state.setdefault("demo_mode", False)   # LIVE is the default
+st.session_state.setdefault("demo_mode", False)
 st.session_state.setdefault("hatch_system", False)
 st.session_state.setdefault("hatch_all_time", False)
+st.session_state.setdefault("demo_paused", {c["name"] for c in DEMO_CONNECTORS if c["paused"]})
 
 st.title("MAR Guardrail")
-st.caption("Current-month PAID MAR per connector — live from your warehouse, "
-           "with limits and alerts. Surfaces exceptions first, scales to hundreds.")
+st.caption("Your Fivetran connectors — current-month PAID MAR vs limits, with "
+           "on/off control. Roster + switches from the REST API, MAR from the "
+           "Platform Connector. Exceptions first; scales to hundreds.")
 
 _, controls = st.columns([3, 1])
 with controls:
     st.toggle("Demo mode", key="demo_mode",
-              help="Off = live data from your destination. On = bundled sample data.")
+              help="Off = live (your Fivetran account). On = bundled sample roster.")
     if st.button("Debug", key="debug_btn", use_container_width=True):
         st.session_state["debug_open"] = not st.session_state["debug_open"]
 
 data_mode = "demo" if st.session_state["demo_mode"] else "live"
 
-# Debug escape-hatch toggles must be read before the load, so render them first.
 debug_slot = st.container()
 if st.session_state["debug_open"] and data_mode == "live":
     with debug_slot:
         with st.container(border=True):
-            st.markdown("**Debug — live data escape hatch**")
-            st.caption("The main view is always PAID + current month. These are for "
-                       "testing on a free account (only SYSTEM rows exist).")
+            st.markdown("**Debug — live MAR escape hatch**")
+            st.caption("MAR view is PAID + current month. On a free account "
+                       "(only SYSTEM rows) flip these to see live MAR.")
             h = st.columns(2)
             with h[0]:
                 st.toggle("View SYSTEM rows", key="hatch_system")
@@ -281,35 +316,79 @@ if st.session_state["debug_open"] and data_mode == "live":
 use_system = st.session_state["debug_open"] and data_mode == "live" and st.session_state["hatch_system"]
 use_all_time = st.session_state["debug_open"] and data_mode == "live" and st.session_state["hatch_all_time"]
 
-# Load data.
-console_text, load_error = "", None
+# --- Load roster + MAR ------------------------------------------------------
+console_text, load_error, roster_note = "", None, None
 if data_mode == "demo":
-    data = DEMO_MAR
+    roster = [{"name": c["name"], "service": c["service"],
+               "paused": c["name"] in st.session_state["demo_paused"]}
+              for c in DEMO_CONNECTORS]
+    mar_by_conn = DEMO_MAR
+    on_off_known = True
 else:
-    data, load_error, console_text = load_live(("SYSTEM",) if use_system else ("PAID",), use_all_time)
+    mar_by_conn, load_error, console_text = load_mar_live(
+        ("SYSTEM",) if use_system else ("PAID",), use_all_time)
+    roster, roster_note = load_roster_live()
+    on_off_known = roster is not None
+    if roster is None:
+        # No live roster — fall back to whatever names MAR gave us (read-only).
+        roster = [{"name": n, "service": "—", "paused": None} for n in sorted(mar_by_conn)]
 
 if load_error:
     st.error(f"Couldn't load live MAR — {load_error}\n\nOpen **Debug** for the full "
-             "system state and console, or switch on **Demo mode** to explore the layout.")
-elif data_mode == "live" and not data:
-    hint = ("" if use_system else " On a free Fivetran account there are no PAID rows — "
-            "open **Debug** and enable *View SYSTEM rows* to see live data.")
-    st.info(f"Connected, but no {'SYSTEM' if use_system else 'PAID'} MAR for the "
-            f"selected window.{hint}")
+             "system state, or switch on **Demo mode**.")
+if roster_note:
+    st.info(roster_note)
+elif data_mode == "live" and not roster and not load_error:
+    st.info("Connected, but no connectors/MAR for the selected window. On a free "
+            "account, open **Debug** and enable *View SYSTEM rows*.")
 
-# Limits + scored rows.
-left, right = st.columns([1, 3])
+# --- Limits + rows ----------------------------------------------------------
+left, _ = st.columns([1, 3])
 with left:
     default_limit = st.number_input(
         "Default monthly MAR limit", min_value=1, step=1, value=DEFAULT_LIMIT,
         help="Applied to connectors without an explicit limit in config.py.")
-limits = resolve_limits(data, int(default_limit))
-rows = build_rows(data, limits)
+limits = resolve_limits([c["name"] for c in roster], int(default_limit))
+rows = build_rows(roster, mar_by_conn, limits)
 
-render_overview(rows)
+render_overview(rows, on_off_known)
+
+changes = []
 if rows:
-    render_table(rows)
-render_run_controls(data, limits, data_mode)
+    changes = render_inventory(rows, on_off_known)
+
+# --- On/off apply -----------------------------------------------------------
+if on_off_known:
+    with st.container(border=True):
+        really_apply = st.checkbox(
+            "Actually apply on/off changes to Fivetran (live REST API)",
+            key="really_apply", value=False,
+            help="Off = simulated (logged only). On (live mode) = real pause/resume "
+                 "via the Fivetran REST API.")
+        if really_apply and data_mode == "live":
+            st.caption(":red[Live — toggling Active will really pause/resume the "
+                       "connector in Fivetran.]")
+        label = f"Apply on/off changes ({len(changes)})" if changes else "Apply on/off changes"
+        if st.button(label, type="primary", disabled=not changes):
+            apply_onoff(changes, really_apply, data_mode)
+            st.session_state.pop("inv_editor", None)  # reset editor to new state
+            st.rerun()
+
+# --- Run guardrail pass (alerts on over-limit) ------------------------------
+st.subheader("Run guardrail pass")
+with st.container(border=True):
+    channels = st.multiselect("Alert channels for over-limit connectors",
+                              ALERT_CHANNELS, default=["slack"])
+    really_send = st.checkbox("Actually send Slack / Email / Webhook alerts",
+                              key="really_send", value=False)
+    rc, cc = st.columns(2)
+    if rc.button("Run guardrail pass", type="primary", use_container_width=True, disabled=not rows):
+        run_pass(rows, limits, channels, really_send, data_mode)
+        st.rerun()
+    if cc.button("Clear log", use_container_width=True):
+        state_mod.clear_activity_log()
+        st.rerun()
+
 render_activity_log()
 
 if st.session_state["debug_open"]:

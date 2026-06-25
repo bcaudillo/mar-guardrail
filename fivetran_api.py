@@ -103,41 +103,80 @@ def _find_connection_id(connection_name):
     return None
 
 
-def pause_connector(connection_name):
-    """Pause the named connector in Fivetran. Returns True on success.
+def list_connections():
+    """Return the full connector roster from Fivetran (the REST API).
 
-    Never raises — any failure is caught and printed so the calling guardrail
-    loop keeps running for the other connectors. Returns False on any error.
-    """
+    This is "here are all the connectors you have" — including paused ones and
+    ones with no recent MAR — which the dashboard uses as its inventory and to
+    drive the on/off (pause/resume) toggles. Each item:
+
+        {"name", "service", "paused", "sync_state", "group_id", "connection_id"}
+
+    `name` is Fivetran's connection schema, matching incremental_mar.connection_name
+    so MAR joins onto it. Raises on API error (the caller surfaces it)."""
+    items = []
+    groups_resp = requests.get(
+        f"{FIVETRAN_BASE_URL}/groups", auth=_AUTH, timeout=_TIMEOUT_SECONDS
+    )
+    groups_resp.raise_for_status()
+
+    for group in groups_resp.json().get("data", {}).get("items", []):
+        cursor = None
+        while True:
+            params = {"cursor": cursor} if cursor else {}
+            conns_resp = requests.get(
+                f"{FIVETRAN_BASE_URL}/groups/{group['id']}/connections",
+                auth=_AUTH, params=params, timeout=_TIMEOUT_SECONDS,
+            )
+            conns_resp.raise_for_status()
+            data = conns_resp.json().get("data", {})
+            for conn in data.get("items", []):
+                status = conn.get("status") or {}
+                items.append({
+                    "name": conn.get("schema"),
+                    "service": conn.get("service"),
+                    "paused": bool(conn.get("paused")),
+                    "sync_state": status.get("sync_state"),
+                    "group_id": group["id"],
+                    "connection_id": conn.get("id"),
+                })
+            cursor = data.get("next_cursor")
+            if not cursor:
+                break
+    return items
+
+
+def set_paused(connection_name, paused):
+    """Pause (paused=True) or resume (paused=False) the named connector. Returns
+    True on success. Never raises — failures are caught and printed so a bulk
+    apply keeps going for the other connectors.
+
+    This is the single 'turn it on/off' call: the dashboard's toggles route
+    here, and pause_connector() below is just set_paused(name, True)."""
+    verb = "Paused" if paused else "Resumed"
     try:
         connection_id = _find_connection_id(connection_name)
         if connection_id is None:
-            print(
-                f"  [fivetran] Could not find a connection named "
-                f"'{connection_name}' in your Fivetran account — nothing paused."
-            )
+            print(f"  [fivetran] Could not find a connection named "
+                  f"'{connection_name}' — nothing changed.")
             return False
-
         resp = requests.patch(
             f"{FIVETRAN_BASE_URL}/connections/{connection_id}",
-            auth=_AUTH,
-            json={"paused": True},  # <-- swap to False here to RESUME instead.
-            timeout=_TIMEOUT_SECONDS,
+            auth=_AUTH, json={"paused": bool(paused)}, timeout=_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
-        print(f"  [fivetran] Paused '{connection_name}' (id={connection_id}).")
+        print(f"  [fivetran] {verb} '{connection_name}' (id={connection_id}).")
         return True
-
     except requests.exceptions.RequestException as exc:
-        # Covers timeouts, connection errors, and non-2xx responses. We print a
-        # human-readable message (including Fivetran's response body when there
-        # is one) rather than crashing the run.
         detail = ""
         if exc.response is not None:
             detail = f" — Fivetran said: {exc.response.text}"
-        print(
-            f"  [fivetran] Failed to pause '{connection_name}': {exc}{detail}\n"
-            f"  Check your API key/secret in config.py and that the connector "
-            f"name matches Fivetran."
-        )
+        print(f"  [fivetran] Failed to {verb.lower()[:-1]} '{connection_name}': "
+              f"{exc}{detail}\n  Check your API key/secret and the connector name.")
         return False
+
+
+def pause_connector(connection_name):
+    """Pause the named connector. Thin wrapper kept for the trigger dispatch in
+    triggers.py / main.py — equivalent to set_paused(name, True)."""
+    return set_paused(connection_name, True)

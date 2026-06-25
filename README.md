@@ -136,23 +136,26 @@ connectors that need attention rather than making you scroll hundreds.
 streamlit run app.py
 ```
 
-- **Live by default.** Reads real current-month **PAID** MAR from your
-  destination. A low-prominence **Demo** toggle switches to bundled sample data
-  for layout/testing without a database.
-- **Exception-focused table.** Every connector is scored against its limit and
-  shown **most-at-risk-first** in a sortable/filterable table (filter by
-  Exceptions / Over / Near, by schema, or search). This is what scales to
-  hundreds of connectors — you never scroll a wall of rows.
+- **Inventory-first.** It starts from **all the connectors you have** — the
+  roster Fivetran reports via the REST API — not just the ones with MAR this
+  month. Paused connectors and ones with zero recent MAR still appear. A
+  low-prominence **Demo** toggle switches to a bundled sample roster.
+- **On/off control.** Each connector has an **Active** switch (the roster's
+  `paused` state). Toggle it and **Apply** to pause/resume via the Fivetran REST
+  API. This is **gated**: simulated (logged) by default; tick **"Actually apply
+  on/off changes"** to write live.
+- **Exception-focused table.** Each connector is scored against its limit and
+  shown **most-at-risk-first**, filterable by Exceptions / Over / Paused, by
+  service, or search. This is what scales to hundreds — you never scroll a wall.
 - **Policy limits.** A connector's limit comes from `config.py` where defined,
-  else a **Default monthly MAR limit** you set in the UI — so you don't hand-set
-  hundreds of them. Status is OVER / NEAR (≥80%) / OK with % of limit.
-- **Run guardrail pass.** Evaluates **every** connector in one pass using the
-  *same* `main.evaluate()` the CLI uses, and acts on the **exceptions only**
-  (O(exceptions), not O(fleet)), recording each step to the **activity log**.
-  Dispatch is **simulated** by default; tick **"Actually send Slack / Email /
-  Webhook alerts"** to route those three through the real `trigger_*` functions
-  from `config.py`. **Pause is always simulated** in the console. Real `main.py`
-  runs in the same process feed the same log.
+  else a **Default monthly MAR limit** you set in the UI. Status is
+  OVER / NEAR (≥80%) / OK with % of limit. MAR comes from the Platform
+  Connector's `incremental_mar`; the roster and switches come from the REST API.
+- **Run guardrail pass.** Evaluates **every** connector via the *same*
+  `main.evaluate()` the CLI uses and alerts on the **over-limit only**, recording
+  each step to the **activity log**. Alert dispatch is **simulated** by default;
+  tick **"Actually send Slack / Email / Webhook alerts"** to route those through
+  the real `trigger_*` functions from `config.py`.
 - **Debug panel.** A **Debug** button toggles an inline panel showing the
   pre-flight **system state** (config, DB connection, MAR table, Fivetran API) —
   with the *exact* reason when something fails — plus the captured console.
