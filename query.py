@@ -124,6 +124,41 @@ def get_mar_by_schema(free_types=("PAID",), all_time=False):
     return grouped
 
 
+def get_daily_mar(free_types=("PAID",), all_time=False):
+    """Return {connection_name: [(measured_date, rows), ...]} (daily, sorted).
+
+    Same source as get_current_mar — incremental_mar — but NOT collapsed to a
+    monthly total. This is the per-day history anomaly detection needs to learn
+    each connector's baseline and spot spikes. One query for the whole account.
+    """
+    if all_time:
+        start, end = date(1970, 1, 1), date(2999, 1, 1)
+    else:
+        start, end = _current_month_window()
+
+    sql = text(
+        f"""
+        SELECT connection_name, measured_date, SUM(incremental_rows) AS rows
+        FROM {_table_ref()}
+        WHERE free_type IN :free_types
+          AND measured_date >= :start
+          AND measured_date < :end
+        GROUP BY connection_name, measured_date
+        """
+    ).bindparams(bindparam("free_types", expanding=True))
+
+    out = {}
+    with _get_engine().connect() as conn:
+        result = conn.execute(
+            sql, {"free_types": list(free_types), "start": start, "end": end}
+        )
+        for connection_name, measured_date, rows in result:
+            out.setdefault(connection_name, []).append((measured_date, int(rows)))
+    for series in out.values():
+        series.sort(key=lambda t: str(t[0]))
+    return out
+
+
 def check_connection():
     """Probe the database without raising. Returns a dict the debug panel renders:
 

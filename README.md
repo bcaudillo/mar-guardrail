@@ -144,18 +144,22 @@ streamlit run app.py
   `paused` state). Toggle it and **Apply** to pause/resume via the Fivetran REST
   API. This is **gated**: simulated (logged) by default; tick **"Actually apply
   on/off changes"** to write live.
-- **Exception-focused table.** Each connector is scored against its limit and
-  shown **most-at-risk-first**, filterable by Exceptions / Over / Paused, by
-  service, or search. This is what scales to hundreds — you never scroll a wall.
-- **Policy limits.** A connector's limit comes from `config.py` where defined,
-  else a **Default monthly MAR limit** you set in the UI. Status is
-  OVER / NEAR (≥80%) / OK with % of limit. MAR comes from the Platform
-  Connector's `incremental_mar`; the roster and switches come from the REST API.
+- **Two detection signals.** Each connector is scored on **budget** (month-to-date
+  MAR vs limit → OVER / NEAR (≥80%) / OK) *and* **anomaly** (a day's MAR vs the
+  connector's own trailing baseline → an early warning even while the monthly
+  total is still fine). A per-connector **daily MAR chart** flags the spike.
+- **Exception-focused table.** Shown **most-at-risk-first**, filterable by
+  Exceptions / Over / Anomalies / Paused, by service, or search. This is what
+  scales to hundreds — you never scroll a wall.
+- **Editable limits.** A connector's limit defaults from `config.py` (else a UI
+  **Default monthly MAR limit**), but you can **edit it inline** in the table and
+  **Apply** — status and anomaly baselines recompute. MAR + daily history come
+  from the Platform Connector's `incremental_mar`; roster + switches from the REST API.
 - **Run guardrail pass.** Evaluates **every** connector via the *same*
-  `main.evaluate()` the CLI uses and alerts on the **over-limit only**, recording
-  each step to the **activity log**. Alert dispatch is **simulated** by default;
-  tick **"Actually send Slack / Email / Webhook alerts"** to route those through
-  the real `trigger_*` functions from `config.py`.
+  `main.evaluate()` the CLI uses, alerts on the **over-limit**, and logs an
+  early-warning for **anomalies** — to the **activity log**. Alert dispatch is
+  **simulated** by default; tick **"Actually send Slack / Email / Webhook alerts"**
+  to route those through the real `trigger_*` functions from `config.py`.
 - **Debug panel.** A **Debug** button toggles an inline panel showing the
   pre-flight **system state** (config, DB connection, MAR table, Fivetran API) —
   with the *exact* reason when something fails — plus the captured console.
@@ -164,9 +168,10 @@ streamlit run app.py
 > On a **free** Fivetran account there are no PAID rows (only `SYSTEM` metadata),
 > so the live view is empty by design. The Debug panel has an escape hatch
 > (*View SYSTEM rows* / *All time*) to see that data while testing.
-
-For a self-contained **teaching demo** of anomaly detection (the PRD's
-early-warning idea, on generated data), see [`examples/`](examples/).
+>
+> **Demo mode** (the default when no database is configured) runs the whole
+> console — including anomaly detection on generated daily history — with zero
+> setup, so you can see everything before wiring up real credentials.
 
 ---
 

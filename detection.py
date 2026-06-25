@@ -71,9 +71,17 @@ def detect(series, limit, window=14, z_threshold=5.0, min_multiple=3.0):
         if len(prior) >= 3:
             mean = sum(prior) / len(prior)
             std = (sum((x - mean) ** 2 for x in prior) / len(prior)) ** 0.5
-            z = (v - mean) / std if std > 0 else 0.0
             multiple = v / mean if mean > 0 else 0.0
-            is_anomaly = z >= z_threshold and multiple >= min_multiple
+            if std > 0:
+                z = (v - mean) / std
+                significant = z >= z_threshold
+            else:
+                # Flat baseline (zero variance): any rise above it is off-pattern
+                # by definition. The multiple test below stops trivial changes
+                # from firing.
+                z = 0.0
+                significant = v > mean
+            is_anomaly = significant and multiple >= min_multiple
         else:
             # Not enough history yet to judge — treat as normal.
             mean, z, multiple, is_anomaly = float(v), 0.0, 1.0, False
