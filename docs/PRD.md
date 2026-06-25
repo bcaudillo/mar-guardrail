@@ -312,6 +312,37 @@ current debug panel**:
 
 ---
 
+## 9a. Footprint & compute (non-functional requirements)
+
+**It must run cheap — no large compute.** This is a hard design rule, not an
+aspiration, and it's a differentiator vs. "stand up an anomaly-detection
+platform." The profile:
+
+- **Single periodic batch job**, not a standing service. A cron / Lambda /
+  Airflow task that runs for **seconds** and exits. No always-on process, no
+  cluster, no queue. **[VERIFIED — main.py is one pass then exits]**
+- **The warehouse does the aggregation, not us.** Detection is **one `GROUP BY`**
+  over `incremental_mar`; the app reads a *small* result (hundreds–thousands of
+  rows) and **never scans raw rows**. Cost is dominated by that one cheap
+  aggregation. **[VERIFIED — query.py]**
+- **Trivial math.** Anomaly detection is rolling mean/σ — **O(connectors × days)**,
+  milliseconds and megabytes. **No ML training, no GPU, no streaming, no model
+  to host.** **[VERIFIED — detection.py; 500 connectors scored in ~18 ms]**
+- **Bounded data windows.** Current month + a trailing baseline window — never
+  full history.
+- **Act on exceptions only.** O(exceptions) REST calls, not O(fleet). **[VERIFIED]**
+
+**Design rules that keep it there** (treat as invariants): aggregate in SQL not
+Python; stateless periodic batch; simple statistics over ML; bound every window;
+touch the API only for connectors that need action. An operator UI doing live
+reads should **cache** the warehouse query + roster between interactions so a
+click doesn't re-query. **[OPEN-9 — add caching to app.py's live loads]**
+
+NFR target: a guardrail pass over a few hundred connectors completes in
+**seconds** in a **tiny container** (no GPU, sub-GB memory).
+
+---
+
 ## 10. Open questions / decisions
 
 - **[OPEN-1] Freshness.** `incremental_mar` is batch (synced ~daily). Is
@@ -334,6 +365,10 @@ current debug panel**:
   sensitive, and how do anomalies map to actions (alert-only vs eligible for
   pause)? *(Rec: keep the budget threshold as the hard guardrail; add anomaly
   detection as an early-warning that alerts but does not auto-pause initially.)*
+- **[OPEN-9] Keep it cheap (see §9a).** Cache the operator UI's live warehouse +
+  roster reads so widget clicks don't re-query; confirm the unattended pass stays
+  a seconds-long batch as connector counts grow. *(Rec: cache live loads with a
+  short TTL, invalidate on apply/refresh.)*
 
 ---
 
