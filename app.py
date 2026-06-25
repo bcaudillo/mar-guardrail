@@ -311,25 +311,30 @@ if rows:
         active_changes = [(n, not on) for n, on in zip(edited["Connector"], edited["On"])
                           if cur_paused.get(n) != (not on)]
 
-# --- Actions ----------------------------------------------------------------
+# --- Run --------------------------------------------------------------------
+# One button: it applies your table edits (limit / on-off / action) and then
+# enforces — warns/pauses every connector over its (just-edited) limit.
 live = bool(data_mode == "live" and on_off_known and st.checkbox(
     "Live — actually pause/resume & send alerts in Fivetran", key="really_apply",
     help="Off = preview (logged only). On = real, via the REST API / your channels."))
 
-b1, b2 = st.columns(2)
-n_edits = len(active_changes) + len(limit_changes)
-if b1.button(f"Apply edits ({n_edits})" if n_edits else "Apply edits", disabled=not n_edits,
-             use_container_width=True):
+if st.button("Run guardrail", type="primary", disabled=not rows, use_container_width=True,
+             help="Saves your limit / on-off / action edits, then warns or pauses "
+                  "every connector over its limit (preview unless Live is on)."):
+    # 1) save edits
     st.session_state["limit_overrides"].update(limit_changes)
     st.session_state["actions"].update(actions_now)
+    # 2) apply manual on/off
     for name, paused in active_changes:
         _toggle(name, paused, live, data_mode)
+    # 3) enforce, using the limits as just edited
+    fresh_limits = effective_limits([c["name"] for c in roster])
+    fresh_rows, _ = build_rows(roster, daily, fresh_limits)
+    run_guardrail(fresh_rows, st.session_state["actions"], live, data_mode)
     st.session_state.pop("tbl", None)
     st.rerun()
-if b2.button("Run guardrail", type="primary", disabled=not rows, use_container_width=True):
-    st.session_state["actions"].update(actions_now)
-    run_guardrail(rows, st.session_state["actions"], live, data_mode)
-    st.rerun()
+st.caption("**Run guardrail** saves your edits, then warns/pauses whatever is over its limit "
+           "— a preview you can read below, unless **Live** is on.")
 
 # --- Daily MAR & anomalies (tucked) -----------------------------------------
 if rows:
