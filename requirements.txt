@@ -2,7 +2,9 @@
 # SQLAlchemy      : database-agnostic connection layer for query.py
 # psycopg2-binary : PostgreSQL driver (the default destination; no system build)
 # requests        : Fivetran REST API + Slack/custom webhook calls
-# streamlit       : the demo UI in app.py (not needed for main.py to run)
+# streamlit       : the operator console in app.py (not needed for main.py)
+# pandas          : the connector table in app.py (also a streamlit dependency)
+# altair          : the daily-MAR chart in examples/anomaly_demo.py
 # python-dotenv   : loads secrets from .env into config.py
 #
 # Using a different destination? Keep the lines below and add ITS driver:
@@ -15,4 +17,6 @@ SQLAlchemy
 psycopg2-binary
 requests
 streamlit
+pandas
+altair
 python-dotenv

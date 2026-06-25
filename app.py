@@ -281,7 +281,10 @@ def render_debug_panel(data_mode, console_text, load_error):
 st.set_page_config(page_title="MAR Guardrail", layout="wide")
 
 st.session_state.setdefault("debug_open", False)
-st.session_state.setdefault("demo_mode", False)
+# Open in Demo mode when there's no database configured, so a fresh checkout
+# lands on a working demo instead of a connection error. Configure DATABASE_URL
+# (and Fivetran creds) and it defaults to live.
+st.session_state.setdefault("demo_mode", not config.config_state()["database_url_set"])
 st.session_state.setdefault("hatch_system", False)
 st.session_state.setdefault("hatch_all_time", False)
 st.session_state.setdefault("demo_paused", {c["name"] for c in DEMO_CONNECTORS if c["paused"]})
