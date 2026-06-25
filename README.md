@@ -123,42 +123,47 @@ new ones slot right in.
 
 ---
 
-## The Streamlit demo console
+## The operator console (`app.py`)
 
-The Streamlit app (`app.py`) is a **demo / UI layer only** — it is not required
-to run the framework (`main.py` is). All real logic stays in the core modules
-(`config.py`, `query.py`, `fivetran_api.py`, `triggers.py`, `state.py`); the app
-only renders what they return.
+The Streamlit app (`app.py`) is the **operator console**. It is not required to
+run the guardrail (`main.py` is), but it runs on your **real** data through the
+same core modules (`config.py`, `query.py`, `fivetran_api.py`, `triggers.py`,
+`state.py`) and can fire the same real actions — so what you see is what the
+unattended run does. It's built to **scale**: it surfaces the handful of
+connectors that need attention rather than making you scroll hundreds.
 
 ```bash
 streamlit run app.py
 ```
 
-- **Live by default.** On load it reads real current-month **PAID** MAR from your
-  destination, grouped by schema. A low-prominence **Demo** toggle switches to
-  bundled sample data for layout/testing without a database.
-- **Debug panel.** A **Debug** button toggles an inline panel showing the
-  pre-flight **system state** (config loaded, database connection, MAR table,
-  Fivetran API reachable) — with the *exact* reason when something fails — plus
-  the captured console log. No popups.
-- **Connectors** are grouped by schema, multi-select, and scroll vertically
-  (~10 rows). Each selected connector takes an **integer** MAR limit (no
-  percentages, no cost math) and shows a live OVER/OK status.
-- **Run guardrail check** evaluates the selected connectors against their limits
-  using the *same* `main.evaluate()` logic the CLI uses, and records each result
-  to the **activity log** — a timestamped feed of what the guardrail did (checks,
-  over-limit alerts, and the alert channels it fired). By default dispatch is
-  **simulated** (logged, never sent). Tick **"Actually send Slack / Email /
+- **Live by default.** Reads real current-month **PAID** MAR from your
+  destination. A low-prominence **Demo** toggle switches to bundled sample data
+  for layout/testing without a database.
+- **Exception-focused table.** Every connector is scored against its limit and
+  shown **most-at-risk-first** in a sortable/filterable table (filter by
+  Exceptions / Over / Near, by schema, or search). This is what scales to
+  hundreds of connectors — you never scroll a wall of rows.
+- **Policy limits.** A connector's limit comes from `config.py` where defined,
+  else a **Default monthly MAR limit** you set in the UI — so you don't hand-set
+  hundreds of them. Status is OVER / NEAR (≥80%) / OK with % of limit.
+- **Run guardrail pass.** Evaluates **every** connector in one pass using the
+  *same* `main.evaluate()` the CLI uses, and acts on the **exceptions only**
+  (O(exceptions), not O(fleet)), recording each step to the **activity log**.
+  Dispatch is **simulated** by default; tick **"Actually send Slack / Email /
   Webhook alerts"** to route those three through the real `trigger_*` functions
-  using your `config.py` settings — the original trigger behavior. **Pause is
-  always simulated** in the demo. Real `main.py` runs in the same process feed
-  the same log.
-- The demo's selections and limits are independent UI state; it never writes
-  back to `config.py`.
+  from `config.py`. **Pause is always simulated** in the console. Real `main.py`
+  runs in the same process feed the same log.
+- **Debug panel.** A **Debug** button toggles an inline panel showing the
+  pre-flight **system state** (config, DB connection, MAR table, Fivetran API) —
+  with the *exact* reason when something fails — plus the captured console.
+- The console never writes back to `config.py`.
 
 > On a **free** Fivetran account there are no PAID rows (only `SYSTEM` metadata),
 > so the live view is empty by design. The Debug panel has an escape hatch
 > (*View SYSTEM rows* / *All time*) to see that data while testing.
+
+For a self-contained **teaching demo** of anomaly detection (the PRD's
+early-warning idea, on generated data), see [`examples/`](examples/).
 
 ---
 
