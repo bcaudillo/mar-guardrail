@@ -146,27 +146,24 @@ def build(roster, daily, limits, knobs):
 def render_overview(rows, on_off_known):
     total = sum(r["mar"] for r in rows)
     with st.container(border=True):
-        a, b, c, d, e = st.columns(5)
-        a.metric("Connectors", f"{len(rows):,}")
-        b.metric("Total MAR", f"{total:,}")
-        c.metric("Over limit", sum(1 for r in rows if r["status"] == "OVER"))
-        d.metric("Anomalies", sum(1 for r in rows if r["anomaly"]))
+        a, b, c, d = st.columns(4)
+        a.metric("Total MAR", f"{total:,}")
+        b.metric("Over limit", sum(1 for r in rows if r["status"] == "OVER"))
+        c.metric("Anomalies", sum(1 for r in rows if r["anomaly"]))
         paused = sum(1 for r in rows if r["paused"]) if on_off_known else None
-        e.metric("Paused", paused if paused is not None else "—")
+        d.metric("Paused", paused if paused is not None else "—")
 
 
 def render_inventory(rows, on_off_known):
     """Inventory table with editable Active (on/off) and Limit columns. Returns
     (active_changes, limit_changes) for the caller to apply."""
-    st.subheader("Connectors — your Fivetran inventory")
+    st.subheader("Connectors")
     df = pd.DataFrame(rows)
 
-    f1, f2, f3 = st.columns([1.6, 1.6, 2])
+    f1, f2 = st.columns([2, 2])
     views = ["All", "Exceptions", "Over", "Anomalies"] + (["Paused"] if on_off_known else [])
     view = f1.radio("Show", views, horizontal=True)
-    services = sorted(df["service"].unique())
-    chosen = f2.multiselect("Service", services, default=services)
-    search = f3.text_input("Search connector", "")
+    search = f2.text_input("Search connector", "")
 
     shown = df.copy()
     if view == "Exceptions":
@@ -177,7 +174,6 @@ def render_inventory(rows, on_off_known):
         shown = shown[shown["anomaly"]]
     elif view == "Paused":
         shown = shown[shown["paused"] == True]  # noqa: E712
-    shown = shown[shown["service"].isin(chosen)]
     if search:
         shown = shown[shown["connector"].str.contains(search, case=False)]
     shown = shown.sort_values("risk", ascending=False)
@@ -227,12 +223,10 @@ def render_inventory(rows, on_off_known):
 
 def render_chart(rows, points_by_conn):
     """Per-connector daily MAR with anomalies flagged + the trailing baseline."""
-    st.subheader("Daily MAR & anomalies")
     names = [r["connector"] for r in sorted(rows, key=lambda r: r["risk"], reverse=True)
              if points_by_conn.get(r["connector"])]
     if not names:
-        st.caption("No daily history to chart (Demo mode and live both supply it; "
-                   "a connector with no MAR has nothing to show).")
+        st.caption("No daily history to chart (a connector with no MAR has nothing to show).")
         return
     pick = st.selectbox("Connector", names)
     pts = points_by_conn[pick]
@@ -319,6 +313,34 @@ def render_activity_log():
                         f"**[{ev['source']}]** {ev['message']}")
 
 
+def render_settings(data_mode):
+    """One collapsed home for the knobs that used to clutter the main page:
+    default limit, anomaly sensitivity, alert channels, and the safety gates.
+    Returns everything the page needs. Rendered before the table so the knobs
+    take effect on this run."""
+    with st.expander("Settings & alerts"):
+        a, b = st.columns(2)
+        default_limit = a.number_input(
+            "Default monthly MAR limit", min_value=1, step=1000, value=DEFAULT_LIMIT,
+            help="For connectors without a config.py limit or an inline edit.")
+        channels = b.multiselect("Alert channels for over-limit connectors",
+                                 ALERT_CHANNELS, default=["slack"])
+        st.caption("Anomaly detection sensitivity (OPEN-8)")
+        k1, k2, k3 = st.columns(3)
+        window = k1.slider("Baseline window (days)", 3, 21, 14)
+        z_threshold = k2.slider("Min z-score", 2.0, 10.0, 5.0, step=0.5)
+        min_multiple = k3.slider("Min × baseline", 1.5, 10.0, 3.0, step=0.5)
+        g1, g2 = st.columns(2)
+        really_apply = g1.checkbox(
+            "Actually apply on/off to Fivetran (live REST API)", key="really_apply",
+            help="Off = simulated. On (live) = real pause/resume.")
+        really_send = g2.checkbox(
+            "Actually send Slack / Email / Webhook alerts", key="really_send")
+        if data_mode == "live" and (really_apply or really_send):
+            st.caption(":red[Live dispatch armed — actions will really hit Fivetran / your channels.]")
+    return int(default_limit), (window, z_threshold, min_multiple), channels, really_send, really_apply
+
+
 def render_debug_panel(data_mode, console_text, load_error):
     with st.container(border=True):
         st.markdown("**Debug**")
@@ -346,9 +368,8 @@ st.session_state.setdefault("demo_paused", {c["name"] for c in DEMO_CONNECTORS i
 st.session_state.setdefault("limit_overrides", {})
 
 st.title("MAR Guardrail")
-st.caption("Your Fivetran connectors — month-to-date PAID MAR vs limits, anomaly "
-           "detection, and on/off control. Roster + switches from the REST API, "
-           "MAR from the Platform Connector. Exceptions first; scales to hundreds.")
+st.caption("Your Fivetran connectors — MAR vs limits, anomalies, and on/off. "
+           "Demo mode runs it all with no setup.")
 
 _, controls = st.columns([3, 1])
 with controls:
@@ -401,21 +422,11 @@ elif data_mode == "live" and not roster and not load_error:
     st.info("Connected, but no connectors/MAR for the selected window. On a free "
             "account, open **Debug** and enable *View SYSTEM rows*.")
 
-# --- Controls: default limit + anomaly knobs --------------------------------
-cset, kset = st.columns([1, 2])
-with cset:
-    default_limit = st.number_input(
-        "Default monthly MAR limit", min_value=1, step=1, value=DEFAULT_LIMIT,
-        help="For connectors without a config.py limit or an inline edit below.")
-with kset:
-    with st.expander("Anomaly detection settings (OPEN-8)"):
-        ka, kb, kc = st.columns(3)
-        window = ka.slider("Baseline window (days)", 3, 21, 14)
-        z_threshold = kb.slider("Min z-score", 2.0, 10.0, 5.0, step=0.5)
-        min_multiple = kc.slider("Min × baseline", 1.5, 10.0, 3.0, step=0.5)
+# Collapsed settings drive limits, anomaly sensitivity, channels, and gates.
+default_limit, knobs, channels, really_send, really_apply = render_settings(data_mode)
 
-limits = effective_limits([c["name"] for c in roster], int(default_limit))
-rows, points_by_conn = build(roster, daily, limits, (window, z_threshold, min_multiple))
+limits = effective_limits([c["name"] for c in roster], default_limit)
+rows, points_by_conn = build(roster, daily, limits, knobs)
 
 render_overview(rows, on_off_known)
 
@@ -423,40 +434,25 @@ active_changes, limit_changes = ([], {})
 if rows:
     active_changes, limit_changes = render_inventory(rows, on_off_known)
 
-# --- Apply edits (limits + on/off) ------------------------------------------
-with st.container(border=True):
-    really_apply = st.checkbox(
-        "Actually apply on/off changes to Fivetran (live REST API)",
-        key="really_apply", value=False,
-        help="Off = simulated (logged). On (live) = real pause/resume via the REST API. "
-             "Limit edits are local UI state and always apply.")
-    if really_apply and data_mode == "live":
-        st.caption(":red[Live — toggling Active will really pause/resume the connector.]")
-    n_changes = len(active_changes) + len(limit_changes)
-    label = f"Apply changes ({n_changes})" if n_changes else "Apply changes"
-    if st.button(label, type="primary", disabled=not n_changes):
-        st.session_state["limit_overrides"].update(limit_changes)
-        apply_onoff(active_changes, really_apply, data_mode)
-        st.session_state.pop("inv_editor", None)  # reset editor to the new state
-        st.rerun()
+# --- Actions: one row — apply edits · run pass · clear ----------------------
+n_changes = len(active_changes) + len(limit_changes)
+a1, a2, a3 = st.columns(3)
+if a1.button(f"Apply changes ({n_changes})" if n_changes else "Apply changes",
+             type="primary", use_container_width=True, disabled=not n_changes):
+    st.session_state["limit_overrides"].update(limit_changes)
+    apply_onoff(active_changes, really_apply, data_mode)
+    st.session_state.pop("inv_editor", None)  # reset editor to the new state
+    st.rerun()
+if a2.button("Run guardrail pass", use_container_width=True, disabled=not rows):
+    run_pass(rows, limits, channels, really_send, data_mode)
+    st.rerun()
+if a3.button("Clear log", use_container_width=True):
+    state_mod.clear_activity_log()
+    st.rerun()
 
 if rows:
-    render_chart(rows, points_by_conn)
-
-# --- Run guardrail pass -----------------------------------------------------
-st.subheader("Run guardrail pass")
-with st.container(border=True):
-    channels = st.multiselect("Alert channels for over-limit connectors",
-                              ALERT_CHANNELS, default=["slack"])
-    really_send = st.checkbox("Actually send Slack / Email / Webhook alerts",
-                              key="really_send", value=False)
-    rc, cc = st.columns(2)
-    if rc.button("Run guardrail pass", type="primary", use_container_width=True, disabled=not rows):
-        run_pass(rows, limits, channels, really_send, data_mode)
-        st.rerun()
-    if cc.button("Clear log", use_container_width=True):
-        state_mod.clear_activity_log()
-        st.rerun()
+    with st.expander("Daily MAR & anomalies"):
+        render_chart(rows, points_by_conn)
 
 render_activity_log()
 
