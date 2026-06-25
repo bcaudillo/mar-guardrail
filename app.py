@@ -19,6 +19,7 @@
 import io
 from contextlib import redirect_stderr, redirect_stdout
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -99,20 +100,41 @@ def effective_limits(names):
 
 def build_rows(roster, daily, limits):
     window, z, mult = ANOMALY
-    rows = []
+    rows, points_by_conn = [], {}
     for c in roster:
         name = c["name"]
         series = daily.get(name, [])
         limit = limits.get(name, 0)
         if series:
-            _, summ = detection.detect(series, limit, window=window, z_threshold=z, min_multiple=mult)
+            pts, summ = detection.detect(series, limit, window=window, z_threshold=z, min_multiple=mult)
             mtd, pct, status, anomaly = summ["mtd"], summ["pct"], summ["status"], bool(summ["anomalies"])
         else:
-            mtd, pct, status, anomaly = 0, 0.0, "OK", False
+            pts, mtd, pct, status, anomaly = [], 0, 0.0, "OK", False
+        points_by_conn[name] = pts
         risk = (2_000 if anomaly else 0) + (1_000 if status == "OVER" else 0) + pct * 100
         rows.append({"connector": name, "mar": mtd, "limit": limit, "status": status,
                      "paused": c.get("paused"), "anomaly": anomaly, "risk": risk})
-    return rows
+    return rows, points_by_conn
+
+
+def render_chart(rows, points_by_conn):
+    """Per-connector daily MAR with anomalies flagged + the trailing baseline."""
+    names = [r["connector"] for r in sorted(rows, key=lambda r: r["risk"], reverse=True)
+             if points_by_conn.get(r["connector"])]
+    if not names:
+        st.caption("No daily history to chart.")
+        return
+    pick = st.selectbox("Connector", names, key="chart_pick")
+    pts = points_by_conn[pick]
+    cdf = pd.DataFrame([{"date": p.day, "MAR": p.mar, "baseline": p.baseline, "anomaly": p.is_anomaly}
+                        for p in pts])
+    bars = alt.Chart(cdf).mark_bar().encode(
+        x=alt.X("date:T", title="Day"), y=alt.Y("MAR:Q", title="PAID MAR / day"),
+        color=alt.condition(alt.datum.anomaly, alt.value("#d62728"), alt.value("#4c78a8")),
+        tooltip=["date:T", "MAR:Q", alt.Tooltip("baseline:Q", format=",.0f")])
+    line = alt.Chart(cdf).mark_line(color="#999", strokeDash=[4, 4]).encode(x="date:T", y="baseline:Q")
+    st.altair_chart(bars + line, use_container_width=True)
+    st.caption("Blue = normal day · red = anomaly · dashed = trailing baseline.")
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +257,7 @@ elif data_mode == "live" and not roster and not load_error:
     st.info("Connected, but no connectors/MAR yet. Open **Debug** and enable *View SYSTEM rows*.")
 
 limits = effective_limits([c["name"] for c in roster])
-rows = build_rows(roster, daily, limits)
+rows, points_by_conn = build_rows(roster, daily, limits)
 
 over = sum(1 for r in rows if r["status"] == "OVER")
 anom = sum(1 for r in rows if r["anomaly"])
@@ -308,6 +330,11 @@ if b2.button("Run guardrail", type="primary", disabled=not rows, use_container_w
     st.session_state["actions"].update(actions_now)
     run_guardrail(rows, st.session_state["actions"], live, data_mode)
     st.rerun()
+
+# --- Daily MAR & anomalies (tucked) -----------------------------------------
+if rows:
+    with st.expander("Daily MAR & anomalies"):
+        render_chart(rows, points_by_conn)
 
 # --- Recent activity (tucked) -----------------------------------------------
 events = state_mod.activity_log(newest_first=True)
