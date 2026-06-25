@@ -267,13 +267,15 @@ if on_off_known:
 st.markdown(summary)
 
 # --- The one table ----------------------------------------------------------
-active_changes, limit_changes, actions_now = [], {}, {}
+limit_changes, actions_now = {}, {}
 if rows:
     search = st.text_input("Search", "", placeholder="Filter connectors…", label_visibility="collapsed")
     shown = [r for r in sorted(rows, key=lambda r: r["risk"], reverse=True)
              if search.lower() in r["connector"].lower()]
 
     def status_label(r):
+        if r["paused"]:
+            return "⏸ Paused"
         base = {"OVER": "🔴 OVER", "NEAR": "🟠 NEAR", "OK": "🟢 OK"}[r["status"]]
         return base + ("  🚨 spike" if r["anomaly"] else "")
 
@@ -293,12 +295,9 @@ if rows:
             help="What the guardrail does when this connector is over its limit."),
     }
     disabled = ["Connector", "MAR this month", "Status"]
-    if on_off_known:
-        cols = {"On": [not r["paused"] for r in shown], **cols}
-        col_cfg["On"] = st.column_config.CheckboxColumn("On", help="On = running, off = paused.")
 
     st.caption("Configure per connector: **Limit** (the MAR ceiling) and **When over** "
-               "(Warn / Pause / Warn & Pause) are editable — change them, then **Apply edits**.")
+               "(Warn / Pause / Warn & Pause) are editable — change them, then **Run guardrail**.")
     edited = st.data_editor(pd.DataFrame(cols), key="tbl", hide_index=True,
                             use_container_width=True, height=380, disabled=disabled, column_config=col_cfg)
 
@@ -306,28 +305,19 @@ if rows:
     limit_changes = {n: int(v) for n, v in zip(edited["Connector"], edited["Limit"])
                      if int(v) > 0 and int(v) != cur_limit.get(n)}
     actions_now = dict(zip(edited["Connector"], edited["When over"]))
-    if on_off_known:
-        cur_paused = {r["connector"]: r["paused"] for r in rows}
-        active_changes = [(n, not on) for n, on in zip(edited["Connector"], edited["On"])
-                          if cur_paused.get(n) != (not on)]
 
 # --- Run --------------------------------------------------------------------
-# One button: it applies your table edits (limit / on-off / action) and then
-# enforces — warns/pauses every connector over its (just-edited) limit.
+# One button: it saves your table edits (limit / action) and then enforces —
+# warns/pauses every connector over its (just-edited) limit.
 live = bool(data_mode == "live" and on_off_known and st.checkbox(
     "Live — actually pause/resume & send alerts in Fivetran", key="really_apply",
     help="Off = preview (logged only). On = real, via the REST API / your channels."))
 
 if st.button("Run guardrail", type="primary", disabled=not rows, use_container_width=True,
-             help="Saves your limit / on-off / action edits, then warns or pauses "
-                  "every connector over its limit (preview unless Live is on)."):
-    # 1) save edits
+             help="Saves your limit / action edits, then warns or pauses every "
+                  "connector over its limit (preview unless Live is on)."):
     st.session_state["limit_overrides"].update(limit_changes)
     st.session_state["actions"].update(actions_now)
-    # 2) apply manual on/off
-    for name, paused in active_changes:
-        _toggle(name, paused, live, data_mode)
-    # 3) enforce, using the limits as just edited
     fresh_limits = effective_limits([c["name"] for c in roster])
     fresh_rows, _ = build_rows(roster, daily, fresh_limits)
     run_guardrail(fresh_rows, st.session_state["actions"], live, data_mode)
@@ -335,6 +325,20 @@ if st.button("Run guardrail", type="primary", disabled=not rows, use_container_w
     st.rerun()
 st.caption("**Run guardrail** saves your edits, then warns/pauses whatever is over its limit "
            "— a preview you can read below, unless **Live** is on.")
+
+# --- Resume paused connectors (the deliberate human restart) ----------------
+paused_names = [r["connector"] for r in rows if r["paused"]] if on_off_known else []
+if paused_names:
+    with st.container(border=True):
+        st.markdown(f"**Paused ({len(paused_names)})** — resume after you've fixed the cause.")
+        rsel, rbtn = st.columns([3, 1])
+        to_resume = rsel.multiselect("Resume", paused_names, label_visibility="collapsed",
+                                     placeholder="Pick connectors to resume…")
+        if rbtn.button("Resume", disabled=not to_resume, use_container_width=True):
+            for name in to_resume:
+                _toggle(name, False, live, data_mode)
+            st.session_state.pop("tbl", None)
+            st.rerun()
 
 # --- Daily MAR & anomalies (tucked) -----------------------------------------
 if rows:
