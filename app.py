@@ -187,8 +187,9 @@ st.session_state.setdefault("limit_overrides", {})
 st.session_state.setdefault("actions", {})
 
 st.title("MAR Guardrail")
-st.caption("Each connector's MAR vs its limit, and what to do when it's over: "
-           "**Warn**, **Pause**, or **Warn & Pause**. Demo mode runs with no setup.")
+st.caption("For each connector, set its MAR **limit** and what to do **when it's "
+           "over** — **Warn**, **Pause**, or **Warn & Pause**. Both are configurable "
+           "per connector. Demo mode runs with no setup.")
 
 _, controls = st.columns([3, 1])
 with controls:
@@ -274,6 +275,8 @@ if rows:
         cols = {"On": [not r["paused"] for r in shown], **cols}
         col_cfg["On"] = st.column_config.CheckboxColumn("On", help="On = running, off = paused.")
 
+    st.caption("Configure per connector: **Limit** (the MAR ceiling) and **When over** "
+               "(Warn / Pause / Warn & Pause) are editable — change them, then **Apply edits**.")
     edited = st.data_editor(pd.DataFrame(cols), key="tbl", hide_index=True,
                             use_container_width=True, height=380, disabled=disabled, column_config=col_cfg)
 
