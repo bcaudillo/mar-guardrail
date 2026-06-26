@@ -326,19 +326,31 @@ if st.button("Run guardrail", type="primary", disabled=not rows, use_container_w
 st.caption("**Run guardrail** saves your edits, then warns/pauses whatever is over its limit "
            "— a preview you can read below, unless **Live** is on.")
 
-# --- Resume paused connectors (the deliberate human restart) ----------------
-paused_names = [r["connector"] for r in rows if r["paused"]] if on_off_known else []
-if paused_names:
-    with st.container(border=True):
-        st.markdown(f"**Paused ({len(paused_names)})** — resume after you've fixed the cause.")
-        rsel, rbtn = st.columns([3, 1])
-        to_resume = rsel.multiselect("Resume", paused_names, label_visibility="collapsed",
-                                     placeholder="Pick connectors to resume…")
-        if rbtn.button("Resume", disabled=not to_resume, use_container_width=True):
-            for name in to_resume:
-                _toggle(name, False, live, data_mode)
-            st.session_state.pop("tbl", None)
-            st.rerun()
+# --- Pause / resume a connector directly (the REST API layer) ---------------
+# A direct lever, separate from the limit check: pause or resume a connector by
+# hand via the Fivetran REST API. Handy to prove the API works, or to restart a
+# connector you've paused once the upstream cause is fixed.
+if on_off_known:
+    running = [r["connector"] for r in rows if not r["paused"]]
+    paused_names = [r["connector"] for r in rows if r["paused"]]
+    with st.expander("Pause / resume a connector (direct — via the Fivetran REST API)"):
+        pcol, rcol = st.columns(2)
+        with pcol:
+            to_pause = st.multiselect("Pause these", running, placeholder="Connectors to pause…")
+            if st.button("Pause", disabled=not to_pause, use_container_width=True):
+                for name in to_pause:
+                    _toggle(name, True, live, data_mode)
+                st.session_state.pop("tbl", None)
+                st.rerun()
+        with rcol:
+            to_resume = st.multiselect("Resume these", paused_names, placeholder="Connectors to resume…")
+            if st.button("Resume", disabled=not to_resume, use_container_width=True):
+                for name in to_resume:
+                    _toggle(name, False, live, data_mode)
+                st.session_state.pop("tbl", None)
+                st.rerun()
+        st.caption("Preview unless **Live** is on — Live = a real `PATCH /connections/{id}` "
+                   "pause/resume in Fivetran.")
 
 # --- Daily MAR & anomalies (tucked) -----------------------------------------
 if rows:
