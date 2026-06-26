@@ -103,6 +103,18 @@ def _find_connection_id(connection_name):
     return None
 
 
+def _as_bool(value):
+    """Coerce an API value to a real bool. Guards against a footgun: a JSON
+    string "false" is truthy in Python, so bool("false") is True — which would
+    make every connector look paused. Treat only genuine true-ish values as True;
+    "false"/None/"" become False."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "t")
+    return bool(value)
+
+
 def list_connections():
     """Return the full connector roster from Fivetran (the REST API).
 
@@ -135,7 +147,7 @@ def list_connections():
                 items.append({
                     "name": conn.get("schema"),
                     "service": conn.get("service"),
-                    "paused": bool(conn.get("paused")),
+                    "paused": _as_bool(conn.get("paused")),
                     "sync_state": status.get("sync_state"),
                     "group_id": group["id"],
                     "connection_id": conn.get("id"),
