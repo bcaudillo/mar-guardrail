@@ -266,6 +266,22 @@ if on_off_known:
     summary += f" · **{sum(1 for r in rows if r['paused'])}** paused"
 st.markdown(summary)
 
+# Freshness + mode — so stale data isn't mistaken for live, and Demo isn't
+# mistaken for your real account. MAR is only as fresh as the Platform Connector
+# sync; the paused state is live from the REST API.
+_all_dates = [d for series in daily.values() for d, _ in series]
+freshness = max((str(d) for d in _all_dates), default=None)
+if data_mode == "demo":
+    st.warning("**Demo mode — bundled sample data, not your Fivetran account.** "
+               "Connectors and paused state here are made up. Toggle **Demo mode** off for live.")
+elif freshness:
+    st.caption(f"⏱ MAR data through **{freshness}** (this month). MAR is only as fresh as the "
+               "**Platform Connector**'s last sync — data you just loaded shows up after its next "
+               "sync, not in real time. Paused state is live from the REST API.")
+elif not load_error:
+    st.caption("⏱ No PAID MAR for this window yet — it appears after the Platform Connector syncs. "
+               "See **Debug** for connection state, or enable *View SYSTEM rows*.")
+
 # --- The one table ----------------------------------------------------------
 limit_changes, actions_now = {}, {}
 if rows:
