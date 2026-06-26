@@ -214,6 +214,17 @@ def render_debug_panel(data_mode, console_text, load_error, roster, daily):
             st.caption("No MAR rows for the current window (PAID + this month). Try *View SYSTEM rows* "
                        "/ *All time* above, and confirm FIVETRAN_PLATFORM_SCHEMA points at the right schema.")
 
+        # Notification channels — Warn sends to whichever of these are set.
+        # They live in config.py / .env (the UI never edits config), so this is
+        # read-only status: are they wired up?
+        st.markdown("**Notification channels (config.py / .env)**")
+        cs = config.config_state()
+        mark = lambda ok: "✅ set" if ok else "⚠️ not set"  # noqa: E731
+        st.write(f"Slack: {mark(cs['slack_set'])} · Email: {mark(cs['email_set'])} · "
+                 f"Webhook: {mark(cs['webhook_set'])}")
+        st.caption("A **Warn** sends to whichever of these are configured. Set them in `.env` "
+                   "(`SLACK_WEBHOOK_URL`, `SMTP_*`, `CUSTOM_WEBHOOK_URL`).")
+
         st.markdown("**Console / log**")
         log = (console_text or "").strip()
         if load_error:
