@@ -181,13 +181,39 @@ def run_guardrail(rows, actions, live, data_mode):
             _toggle(r["connector"], True, live, data_mode)
 
 
-def render_debug_panel(data_mode, console_text, load_error):
+def render_debug_panel(data_mode, console_text, load_error, roster, daily):
     with st.container(border=True):
         st.markdown("**Debug**")
         snap = state_mod.snapshot(data_mode)
         st.caption(f"System state · mode: {snap['data_mode'].upper()} · {snap['timestamp']}")
         for check in snap["checks"]:
             st.write(f"{STATUS_ICON[check['status']]}  **{check['label']}** — {check['detail']}")
+
+        # Raw roster straight from the REST API — compare `paused` here to what
+        # Fivetran's dashboard shows. If they disagree, it's an API/field issue;
+        # if they agree, the connectors really are paused in Fivetran.
+        st.markdown("**Roster (raw, from the Fivetran REST API)**")
+        if roster:
+            st.dataframe(
+                pd.DataFrame([{"connector": c.get("name"), "service": c.get("service", "—"),
+                               "paused": c.get("paused"), "sync_state": c.get("sync_state", "—")}
+                              for c in roster]),
+                hide_index=True, use_container_width=True, height=220)
+        else:
+            st.caption("No roster — Fivetran API not configured, or it returned none.")
+
+        # What MAR actually loaded — the real freshness, not an inference.
+        st.markdown("**MAR loaded (from the warehouse)**")
+        dates = [str(d) for s in daily.values() for d, _ in s]
+        if dates:
+            st.caption(f"{sum(len(s) for s in daily.values()):,} daily rows · {len(daily)} connector(s) "
+                       f"with MAR · measured_date **{min(dates)} → {max(dates)}**. "
+                       "If your newly-loaded data isn't in this range, the Platform Connector "
+                       "hasn't synced it yet (or it's a different free_type / schema).")
+        else:
+            st.caption("No MAR rows for the current window (PAID + this month). Try *View SYSTEM rows* "
+                       "/ *All time* above, and confirm FIVETRAN_PLATFORM_SCHEMA points at the right schema.")
+
         st.markdown("**Console / log**")
         log = (console_text or "").strip()
         if load_error:
@@ -387,4 +413,4 @@ with st.expander(f"Recent activity ({len(events)})"):
 
 if st.session_state["debug_open"]:
     with debug_slot:
-        render_debug_panel(data_mode, console_text, load_error)
+        render_debug_panel(data_mode, console_text, load_error, roster, daily)
