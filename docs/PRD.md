@@ -219,6 +219,43 @@ on the **18th** — almost two weeks of runaway syncs earlier — and the action
 went out over the REST API. Threshold = the hard backstop; anomaly = the early
 warning.
 
+### 5.4 Two-speed detection — budget (daily) + velocity (per-sync)
+
+**Researched freshness finding:** Fivetran computes MAR **once per day** —
+`incremental_mar` is a daily table (UTC, monthly reset) and the usage dashboards
+are "updated daily." **No sync frequency beats that ~1-day floor** for the billed
+number; tightening the Platform Connector's schedule only removes the *pull* lag
+(its default is a once-a-day sync), getting you to ~1 day, not real time.
+
+But **MAR can grow in hours** — a runaway can burn the budget in an afternoon —
+so a daily-only signal can't *prevent* damage, only report it. The fix is a
+second, faster signal. Detection therefore runs at **two speeds**:
+
+| Lane | Source | Freshness | Role |
+|---|---|---|---|
+| **Budget** (authoritative) | `incremental_mar` (daily) | ~1 day | month-to-date vs limit, run-rate, the real billed MAR |
+| **Velocity** (early warning) | LOG `records_modified` (per sync) | **minutes** | catch a runaway *as it happens*; pause to stop the bleeding |
+
+- The **LOG table is append-only and updates every sync**; its
+  `records_modified` event carries **rows written per sync** (per schema/table).
+  With the Platform Connector at 5–15 min, this is **minutes-fresh** — fast
+  enough to catch an afternoon runaway.
+- **Caveat:** `records_modified` is *rows written, not MAR* — a row updated 50×
+  counts 50 here but 1 in MAR, so it **over-counts**. It is a **velocity /
+  anomaly signal, not a budget figure**: watch each connector's write-rate vs
+  *its own baseline* and fire on a spike. The daily MAR stays the bill of record.
+- **Pairing:** velocity = the **circuit breaker** (pause now); budget = the
+  authoritative spend + run-rate projection. **[OPEN-10]**
+
+### 5.5 Run modes
+
+- **Event-driven** (recommended): run right after each Platform Connector sync
+  (its sync-end webhook) so the velocity lane is as fresh as the data allows.
+- **Scheduled** (daily/hourly cron): the simple default.
+- **Background snapshot report:** each run emits a digest of every connector's
+  budget status + any velocity spikes — usable as a standing report even when no
+  action is taken (alert-only). **[OPEN-11]**
+
 ---
 
 ## 6. Data inventory — what's available
@@ -345,9 +382,13 @@ NFR target: a guardrail pass over a few hundred connectors completes in
 
 ## 10. Open questions / decisions
 
-- **[OPEN-1] Freshness.** `incremental_mar` is batch (synced ~daily). Is
-  "catch within a sync cycle" acceptable, or is a tighter SLA expected? *(Rec:
-  accept batch; document the lag prominently.)*
+- **[OPEN-1] Freshness — RESEARCHED.** Fivetran computes MAR **once per day**
+  (UTC); `incremental_mar` and the usage dashboards update daily. The ~1-day
+  floor is **unbeatable via sync frequency** — tightening the Platform Connector
+  only removes the *pull* lag (free, worth doing). MAR can grow in hours, so the
+  resolution is the **two-speed model (§5.4)**: keep the daily budget as the
+  authoritative spend, add the per-sync LOG **velocity lane** as the circuit
+  breaker, and use **run-rate projection** to act on the trajectory. *(Decided.)*
 - **[OPEN-2] Durable log sink.** In-memory today. DB table / file / rely on
   alert channels? *(Rec: a `guardrail_actions` table in the destination.)*
 - **[OPEN-3] Schema introspector.** Build it into debug first, so "what's
@@ -369,6 +410,14 @@ NFR target: a guardrail pass over a few hundred connectors completes in
   roster reads so widget clicks don't re-query; confirm the unattended pass stays
   a seconds-long batch as connector counts grow. *(Rec: cache live loads with a
   short TTL, invalidate on apply/refresh.)*
+- **[OPEN-10] Velocity lane (§5.4).** Build `records_modified`-based per-sync
+  write-volume detection: confirm the LOG table's table name + `message_data`
+  JSON shape against a real warehouse (via the introspector), baseline each
+  connector's write-rate, and decide the spike→action mapping (alert-first;
+  pause on sustained spike). *(Rec: alert on first spike, pause on sustained.)*
+- **[OPEN-11] Background snapshot report.** What/where does the digest go — a
+  written file, a Slack post, a `guardrail_actions`-style table? How often?
+  *(Rec: a per-run summary to the same activity log + optional Slack digest.)*
 
 ---
 
