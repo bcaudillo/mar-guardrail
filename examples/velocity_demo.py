@@ -59,7 +59,9 @@ st.caption("Two-speed detection. The **daily budget** lane is a day late; the "
 with st.sidebar:
     st.header("Connector")
     connector = st.text_input("Name", "postgres_billing")
-    sync_min = st.select_slider("Platform Connector sync interval (min)",
+    conn_sync = st.select_slider("Connector's own sync (min) — clock #1",
+                                 options=[5, 15, 30, 60, 120, 360, 1440], value=15)
+    sync_min = st.select_slider("Platform Connector sync (min) — clock #2",
                                 options=[5, 10, 15, 30, 60], value=15)
     baseline = st.number_input("Normal rows / sync", 500, 200_000, 5_000, step=500)
     st.header("The runaway")
@@ -126,6 +128,24 @@ if spiking and mtd <= limit:
         f"(**{peak_mult:.0f}× normal**, ~**{runaway_rows:,} rows** since). "
         f"That's **~{start_h}h** before the daily MAR would even show it — the "
         "difference between **stopping** the runaway and **reading about it tomorrow**.")
+
+# --- The three clocks of freshness ------------------------------------------
+# Time-to-see a spike = the slowest of the three clocks (guardrail runs
+# event-driven, so it adds ~0). Fast-lane freshness = the newest sync.
+worst_min = max(conn_sync, sync_min)
+c1, c2, c3 = st.columns(3)
+c1.metric("① Connector sync", f"{conn_sync} min", "rows move + get logged", delta_color="off")
+c2.metric("② Platform Connector", f"{sync_min} min", "log → your warehouse", delta_color="off")
+c3.metric("③ Guardrail run", "event-driven", "on sync-end", delta_color="off")
+fresh = f"~{sync_min} min ago" if series else "—"
+if worst_min >= 1440:
+    st.warning(f"**Fast-lane freshness: newest `records_modified` {fresh}.** But this "
+               f"connector only syncs every **{conn_sync//60}h+** (clock ①) — its intraday "
+               "volume is invisible until it syncs. **Nothing** can beat clock ①.")
+else:
+    st.caption(f"**Fast-lane freshness: newest `records_modified` {fresh}.** "
+               f"Worst-case time to *see* a spike ≈ **{worst_min} min** (the slowest clock). "
+               "Set the Platform Connector as fast as possible — its MAR is free (SYSTEM).")
 
 # --- Chart -------------------------------------------------------------------
 df = pd.DataFrame(points)

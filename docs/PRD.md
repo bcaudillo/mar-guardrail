@@ -256,6 +256,34 @@ second, faster signal. Detection therefore runs at **two speeds**:
   budget status + any velocity spikes — usable as a standing report even when no
   action is taken (alert-only). **[OPEN-11]**
 
+### 5.6 The three clocks of freshness
+
+"Catching a spike in time" is a chain of three intervals — **you are only as
+fast as the slowest**:
+
+1. **The connector's own sync** — when its rows actually move and get logged. We
+   don't set it, but we can **read it**: each connector's sync frequency and
+   last-sync time live in the Platform Connector metadata (and the REST API), so
+   the tool can show every connector's *freshness floor*.
+2. **The Platform Connector's sync** — when those logs reach your warehouse.
+   **Default is once a day — set it as fast as possible** (15 min on Standard,
+   1–5 min on Enterprise). Its own MAR is **free (SYSTEM)**, so this is the
+   single biggest freshness lever and it costs nothing.
+3. **The guardrail run** — when we evaluate and act. Make it **event-driven**
+   (Platform Connector sync-end webhook) or a tight cron.
+
+The velocity lane (§5.4) **inherits clock #2**: the LOG `records_modified` stream
+is only as fresh as the Platform Connector sync — so cranking #2 is what turns it
+from daily into minutes. Tighten all three and a spike is caught **within one
+sync cycle (minutes–hour)**. The only floor we cannot beat: a connector that
+*itself* syncs once a day can't be seen intraday — nothing exposes rows that
+haven't been written yet.
+
+**Product surface:** a **"fast-lane freshness — last update N min ago"** badge
+(from the newest `records_modified` timestamp) plus each connector's **sync
+cadence**, so the customer always knows how current the signal is and where the
+floor sits. **[OPEN-10]**
+
 ---
 
 ## 6. Data inventory — what's available
